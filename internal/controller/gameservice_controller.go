@@ -56,14 +56,17 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
-	ordinals := make([]string, 0, len(pods))
-	activeOrdinals := make(map[string]bool)
+	var podNames []string
 	for _, pod := range pods {
 		if pod.Status.Phase != corev1.PodRunning && pod.Status.Phase != corev1.PodPending {
 			continue
 		}
-		ord := GetPodOrdinal(pod.Name)
-		ordinals = append(ordinals, ord)
+		podNames = append(podNames, pod.Name)
+	}
+
+	ordinals := ingMgr.BuildConnectorOrdinals(podNames)
+	activeOrdinals := make(map[string]bool, len(ordinals))
+	for _, ord := range ordinals {
 		activeOrdinals[ord] = true
 	}
 
