@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -29,6 +30,8 @@ import (
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+
+const gameServiceFinalizer = "zzrr.gs.zzrr.io/finalizer"
 
 type GameServiceReconciler struct {
 	client.Client
@@ -46,6 +49,19 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	if !gs.DeletionTimestamp.IsZero() {
+		return r.finalize(ctx, &gs)
+	}
+
+	if !controllerutil.ContainsFinalizer(&gs, gameServiceFinalizer) {
+		controllerutil.AddFinalizer(&gs, gameServiceFinalizer)
+		if err := r.Update(ctx, &gs); err != nil {
+			log.Error(err, "Failed to add finalizer")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	svcMgr := NewConnectorServiceManager(r.Client, r.Scheme)
@@ -136,13 +152,14 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if !gs.Spec.DeployGroup.Active && gs.Spec.Retention != nil && gs.Spec.Retention.Enabled {
 		duration, err := time.ParseDuration(gs.Spec.Retention.DefaultDuration)
 		if err != nil {
+			log.Error(err, "Invalid retention duration, using default 24h",
+				"duration", gs.Spec.Retention.DefaultDuration)
+			r.Recorder.Event(&gs, corev1.EventTypeWarning, "InvalidRetentionDuration",
+				fmt.Sprintf("Invalid duration %q, using default 24h", gs.Spec.Retention.DefaultDuration))
 			duration = 24 * time.Hour
 		}
 		if gs.CreationTimestamp.Add(duration).Before(time.Now()) {
 			log.Info("Retention period expired, deleting GameService", "name", gs.Name)
-			if err := ingMgr.DeleteIngress(ctx, &gs); err != nil {
-				log.Error(err, "Failed to delete ingress during cleanup")
-			}
 			if err := r.Delete(ctx, &gs); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -159,6 +176,9 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 func (r *GameServiceReconciler) setCondition(gs *zzrrv1alpha1.GameService, condType string, status metav1.ConditionStatus, reason, message string) {
 	for i, c := range gs.Status.Conditions {
 		if c.Type == condType {
+			if c.Status == status && c.Reason == reason && c.Message == message {
+				return
+			}
 			gs.Status.Conditions[i].Status = status
 			gs.Status.Conditions[i].Reason = reason
 			gs.Status.Conditions[i].Message = message
@@ -173,6 +193,46 @@ func (r *GameServiceReconciler) setCondition(gs *zzrrv1alpha1.GameService, condT
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
+}
+
+func (r *GameServiceReconciler) finalize(ctx context.Context, gs *zzrrv1alpha1.GameService) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(gs, gameServiceFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	log := log.FromContext(ctx)
+	log.Info("Finalizing GameService", "name", gs.Name)
+
+	ingMgr := NewIngressManager(r.Client, r.Scheme)
+	if err := ingMgr.DeleteIngress(ctx, gs); err != nil {
+		log.Error(err, "Failed to delete ingress during finalization")
+		return ctrl.Result{}, err
+	}
+
+	var svcList corev1.ServiceList
+	if err := r.List(ctx, &svcList,
+		client.InNamespace(gs.Spec.ConnectorNamespace),
+		client.MatchingLabels{"app.kubernetes.io/managed-by": "gs-operator"},
+	); err != nil {
+		log.Error(err, "Failed to list services during finalization")
+		return ctrl.Result{}, err
+	}
+	for i := range svcList.Items {
+		svc := svcList.Items[i]
+		if err := r.Delete(ctx, &svc); err != nil && !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to delete service during finalization", "service", svc.Name)
+			return ctrl.Result{}, err
+		}
+		log.Info("Deleted Service during finalization", "service", svc.Name)
+	}
+
+	controllerutil.RemoveFinalizer(gs, gameServiceFinalizer)
+	if err := r.Update(ctx, gs); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Finalization complete")
+	return ctrl.Result{}, nil
 }
 
 func (r *GameServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
