@@ -153,6 +153,18 @@ func (r *GameServiceReconciler) setCondition(gs *zzrrv1alpha1.GameService, condT
 }
 
 func (r *GameServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&zzrrv1alpha1.GameService{},
+		"spec.connectorNamespace",
+		func(rawObj client.Object) []string {
+			gs := rawObj.(*zzrrv1alpha1.GameService)
+			return []string{gs.Spec.ConnectorNamespace}
+		},
+	); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&zzrrv1alpha1.GameService{}).
 		Watches(
@@ -173,20 +185,18 @@ func (r *GameServiceReconciler) mapConnectorPodToGameService(ctx context.Context
 	}
 
 	var list zzrrv1alpha1.GameServiceList
-	if err := r.List(ctx, &list); err != nil {
+	if err := r.List(ctx, &list, client.MatchingFields{"spec.connectorNamespace": pod.Namespace}); err != nil {
 		return nil
 	}
 
 	var requests []reconcile.Request
 	for _, gs := range list.Items {
-		if gs.Spec.ConnectorNamespace == pod.Namespace {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      gs.Name,
-					Namespace: gs.Namespace,
-				},
-			})
-		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      gs.Name,
+				Namespace: gs.Namespace,
+			},
+		})
 	}
 	return requests
 }
