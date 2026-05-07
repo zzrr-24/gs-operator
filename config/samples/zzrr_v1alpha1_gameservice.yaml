@@ -1,0 +1,24 @@
+apiVersion: zzrr.gs.zzrr.io/v1alpha1
+kind: GameService
+metadata:
+  labels:
+    app.kubernetes.io/name: gs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: blue
+spec:
+  ingress:
+    host: game.example.com
+    ingressClassName: higress
+    pathType: Prefix
+    pathPrefix: "/connector"
+    port: 3010
+    annotations:
+      higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
+      higress.ingress.kubernetes.io/proxy-send-timeout: "300s"
+  connectorNamespace: adventure
+  deployGroup:
+    role: blue
+    active: true
+  retention:
+    enabled: true
+    defaultDuration: 24h

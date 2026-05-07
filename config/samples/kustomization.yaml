@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- zzrr_v1alpha1_gameservice.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

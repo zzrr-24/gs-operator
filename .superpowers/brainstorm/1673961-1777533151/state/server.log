@@ -1,0 +1,2 @@
+{"type":"server-started","port":52135,"host":"0.0.0.0","url_host":"localhost","url":"http://localhost:52135","screen_dir":"/root/gs-operator/.superpowers/brainstorm/1673961-1777533151/content","state_dir":"/root/gs-operator/.superpowers/brainstorm/1673961-1777533151/state"}
+{"type":"server-stopped","reason":"idle timeout"}
