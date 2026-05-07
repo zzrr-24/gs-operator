@@ -125,8 +125,20 @@ func (m *IngressManager) ReconcileIngress(ctx context.Context, gs *zzrrv1alpha1.
 	}
 
 	existingIngress.Spec = desiredIngress.Spec
-	existingIngress.Annotations = desiredIngress.Annotations
-	existingIngress.Labels = desiredIngress.Labels
+
+	if existingIngress.Annotations == nil {
+		existingIngress.Annotations = make(map[string]string)
+	}
+	for k, v := range desiredIngress.Annotations {
+		existingIngress.Annotations[k] = v
+	}
+
+	if existingIngress.Labels == nil {
+		existingIngress.Labels = make(map[string]string)
+	}
+	for k, v := range desiredIngress.Labels {
+		existingIngress.Labels[k] = v
+	}
 
 	if err := m.Update(ctx, &existingIngress); err != nil {
 		return fmt.Errorf("failed to update ingress: %w", err)
