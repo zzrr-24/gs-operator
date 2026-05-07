@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,10 +72,29 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		activeOrdinals[ord] = true
 	}
 
-	for _, pod := range pods {
-		if _, err := svcMgr.EnsureService(ctx, &pod, gs.Spec.Ingress.Port); err != nil {
-			log.Error(err, "Failed to ensure service for pod", "pod", pod.Name)
-			r.Recorder.Event(&gs, corev1.EventTypeWarning, "ServiceCreateFailed", err.Error())
+	{
+		const maxConcurrency = 5
+		sem := semaphore.NewWeighted(maxConcurrency)
+		eg, egCtx := errgroup.WithContext(ctx)
+
+		for i := range pods {
+			pod := pods[i]
+			eg.Go(func() error {
+				if err := sem.Acquire(egCtx, 1); err != nil {
+					return err
+				}
+				defer sem.Release(1)
+				if _, err := svcMgr.EnsureService(egCtx, &pod, gs.Spec.Ingress.Port); err != nil {
+					log.Error(err, "Failed to ensure service for pod", "pod", pod.Name)
+					r.Recorder.Event(&gs, corev1.EventTypeWarning, "ServiceCreateFailed", err.Error())
+					return err
+				}
+				return nil
+			})
+		}
+
+		if err := eg.Wait(); err != nil {
+			log.Error(err, "Failed to ensure services")
 		}
 	}
 
@@ -96,6 +117,8 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	} else {
 		if err := ingMgr.DeleteIngress(ctx, &gs); err != nil {
 			log.Error(err, "Failed to delete ingress for standby group")
+			r.Recorder.Event(&gs, corev1.EventTypeWarning, "IngressDeleteFailed", err.Error())
+			r.setCondition(&gs, "Available", metav1.ConditionFalse, "IngressDeleteFailed", err.Error())
 		}
 		r.setCondition(&gs, "Available", metav1.ConditionTrue, "Standby",
 			"Standby, no ingress active")
