@@ -23,15 +23,15 @@ import (
 	zzrrv1alpha1 "gs-operator/api/v1alpha1"
 )
 
-// +kubebuilder:rbac:groups=zzrr.gs.zzrr.io,resources=gameservices,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=zzrr.gs.zzrr.io,resources=gameservices/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=zzrr.gs.zzrr.io,resources=gameservices/finalizers,verbs=update
+// +kubebuilder:rbac:groups=gs.zzrr.io,resources=gameservices,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gs.zzrr.io,resources=gameservices/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=gs.zzrr.io,resources=gameservices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
-const gameServiceFinalizer = "zzrr.gs.zzrr.io/finalizer"
+const gameServiceFinalizer = "gs.zzrr.io/finalizer"
 
 type GameServiceReconciler struct {
 	client.Client

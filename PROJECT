@@ -3,7 +3,7 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.13.1
-domain: gs.zzrr.io
+domain: zzrr.io
 layout:
 - go.kubebuilder.io/v4
 projectName: gs-operator
@@ -13,8 +13,8 @@ resources:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: gs.zzrr.io
-  group: zzrr
+  domain: zzrr.io
+  group: gs
   kind: GameService
   path: gs-operator/api/v1alpha1
   version: v1alpha1

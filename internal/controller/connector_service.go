@@ -81,10 +81,8 @@ func (m *ConnectorServiceManager) EnsureService(ctx context.Context, pod *corev1
 		return desiredSvc, nil
 	}
 
-	needsUpdate := false
-	if len(existingSvc.Spec.Ports) == 0 || existingSvc.Spec.Ports[0].Port != port {
-		needsUpdate = true
-	}
+	needsUpdate := len(existingSvc.Spec.Ports) == 0 || existingSvc.Spec.Ports[0].Port != port
+
 	for k, v := range desiredSvc.Labels {
 		if existingSvc.Labels[k] != v {
 			needsUpdate = true

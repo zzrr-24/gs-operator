@@ -1,4 +1,4 @@
-apiVersion: zzrr.gs.zzrr.io/v1alpha1
+apiVersion: gs.zzrr.io/v1alpha1
 kind: GameService
 metadata:
   name: blue

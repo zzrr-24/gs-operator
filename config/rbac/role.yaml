@@ -32,19 +32,7 @@ rules:
   - create
   - patch
 - apiGroups:
-  - networking.k8s.io
-  resources:
-  - ingresses
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - zzrr.gs.zzrr.io
+  - gs.zzrr.io
   resources:
   - gameservices
   verbs:
@@ -56,16 +44,28 @@ rules:
   - update
   - watch
 - apiGroups:
-  - zzrr.gs.zzrr.io
+  - gs.zzrr.io
   resources:
   - gameservices/finalizers
   verbs:
   - update
 - apiGroups:
-  - zzrr.gs.zzrr.io
+  - gs.zzrr.io
   resources:
   - gameservices/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

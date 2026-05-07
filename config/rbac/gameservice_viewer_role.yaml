@@ -1,7 +1,7 @@
 # This rule is not used by the project gs-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants read-only access to zzrr.gs.zzrr.io resources.
+# Grants read-only access to gs.zzrr.io resources.
 # This role is intended for users who need visibility into these resources
 # without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
 
@@ -14,7 +14,7 @@ metadata:
   name: gameservice-viewer-role
 rules:
 - apiGroups:
-  - zzrr.gs.zzrr.io
+  - gs.zzrr.io
   resources:
   - gameservices
   verbs:
@@ -22,7 +22,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - zzrr.gs.zzrr.io
+  - gs.zzrr.io
   resources:
   - gameservices/status
   verbs:

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 
 	networkingv1 "k8s.io/api/networking/v1"
@@ -129,16 +130,12 @@ func (m *IngressManager) ReconcileIngress(ctx context.Context, gs *zzrrv1alpha1.
 	if existingIngress.Annotations == nil {
 		existingIngress.Annotations = make(map[string]string)
 	}
-	for k, v := range desiredIngress.Annotations {
-		existingIngress.Annotations[k] = v
-	}
+	maps.Copy(existingIngress.Annotations, desiredIngress.Annotations)
 
 	if existingIngress.Labels == nil {
 		existingIngress.Labels = make(map[string]string)
 	}
-	for k, v := range desiredIngress.Labels {
-		existingIngress.Labels[k] = v
-	}
+	maps.Copy(existingIngress.Labels, desiredIngress.Labels)
 
 	if err := m.Update(ctx, &existingIngress); err != nil {
 		return fmt.Errorf("failed to update ingress: %w", err)
