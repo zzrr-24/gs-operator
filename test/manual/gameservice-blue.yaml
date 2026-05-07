@@ -2,10 +2,10 @@ apiVersion: gs.zzrr.io/v1alpha1
 kind: GameService
 metadata:
   name: blue
-  namespace: default
+  namespace: gsb
 spec:
   ingress:
-    host: game.example.com
+    host: game.zzrr.io
     ingressClassName: higress
     pathType: Prefix
     pathPrefix: "/connector"
@@ -14,7 +14,7 @@ spec:
       higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
       higress.ingress.kubernetes.io/proxy-send-timeout: "300s"
       higress.ingress.kubernetes.io/rewrite-target: "/"
-  connectorNamespace: adventure-blue
+  connectorNamespace: gsb
   deployGroup:
     role: blue
     active: true

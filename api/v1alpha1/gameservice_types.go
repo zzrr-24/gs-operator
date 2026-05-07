@@ -67,11 +67,16 @@ type GameServiceSpec struct {
 type GameServiceStatus struct {
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 	ConnectorCount     int32              `json:"connectorCount,omitempty"`
+	ConnectorImage     string             `json:"connectorImage,omitempty"`
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Role",type=string,JSONPath=".spec.deployGroup.role"
+// +kubebuilder:printcolumn:name="Active",type=boolean,JSONPath=".spec.deployGroup.active"
+// +kubebuilder:printcolumn:name="Pods",type=integer,JSONPath=".status.connectorCount"
+// +kubebuilder:printcolumn:name="Version",type=string,JSONPath=".status.connectorImage"
 type GameService struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -39,6 +39,7 @@ type GameServiceReconciler struct {
 	Recorder record.EventRecorder
 }
 
+// nolint:gocyclo
 func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	log.Info("Starting reconciliation")
@@ -139,6 +140,22 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		r.setCondition(&gs, "Available", metav1.ConditionTrue, "Standby",
 			"Standby, no ingress active")
 		r.setCondition(&gs, "TrafficActive", metav1.ConditionFalse, "Standby", "This deployment group is not receiving traffic")
+	}
+
+	gs.Status.ConnectorImage = ""
+	for i := range pods {
+		if pods[i].Status.Phase == corev1.PodRunning && len(pods[i].Spec.Containers) > 0 {
+			gs.Status.ConnectorImage = pods[i].Spec.Containers[0].Image
+			break
+		}
+	}
+	if gs.Status.ConnectorImage == "" {
+		for i := range pods {
+			if pods[i].Status.Phase == corev1.PodPending && len(pods[i].Spec.Containers) > 0 {
+				gs.Status.ConnectorImage = pods[i].Spec.Containers[0].Image
+				break
+			}
+		}
 	}
 
 	gs.Status.ConnectorCount = int32(len(ordinals))
