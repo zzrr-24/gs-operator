@@ -50,12 +50,7 @@ func (m *ConnectorServiceManager) EnsureService(ctx context.Context, pod *corev1
 	ordinal := GetPodOrdinal(pod.Name)
 	svcName := fmt.Sprintf("connector-%s-svc", ordinal)
 
-	var existingSvc corev1.Service
-	if err := m.Get(ctx, client.ObjectKey{Name: svcName, Namespace: pod.Namespace}, &existingSvc); err == nil {
-		return &existingSvc, nil
-	}
-
-	svc := &corev1.Service{
+	desiredSvc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      svcName,
 			Namespace: pod.Namespace,
@@ -77,12 +72,36 @@ func (m *ConnectorServiceManager) EnsureService(ctx context.Context, pod *corev1
 		},
 	}
 
-	if err := m.Create(ctx, svc); err != nil {
-		return nil, fmt.Errorf("failed to create service %s: %w", svcName, err)
+	var existingSvc corev1.Service
+	if err := m.Get(ctx, client.ObjectKey{Name: svcName, Namespace: pod.Namespace}, &existingSvc); err != nil {
+		if err := m.Create(ctx, desiredSvc); err != nil {
+			return nil, fmt.Errorf("failed to create service %s: %w", svcName, err)
+		}
+		log.Info("Created Service for connector pod", "service", svcName, "pod", pod.Name)
+		return desiredSvc, nil
 	}
 
-	log.Info("Created Service for connector pod", "service", svcName, "pod", pod.Name)
-	return svc, nil
+	needsUpdate := false
+	if len(existingSvc.Spec.Ports) == 0 || existingSvc.Spec.Ports[0].Port != port {
+		needsUpdate = true
+	}
+	for k, v := range desiredSvc.Labels {
+		if existingSvc.Labels[k] != v {
+			needsUpdate = true
+			break
+		}
+	}
+
+	if needsUpdate {
+		existingSvc.Spec = desiredSvc.Spec
+		existingSvc.Labels = desiredSvc.Labels
+		if err := m.Update(ctx, &existingSvc); err != nil {
+			return nil, fmt.Errorf("failed to update service %s: %w", svcName, err)
+		}
+		log.Info("Updated Service for connector pod", "service", svcName)
+	}
+
+	return &existingSvc, nil
 }
 
 func (m *ConnectorServiceManager) DeleteOrphanServices(ctx context.Context, namespace string, activeOrdinals map[string]bool) error {
