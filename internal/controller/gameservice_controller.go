@@ -175,14 +175,15 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				fmt.Sprintf("Invalid duration %q, using default 24h", gs.Spec.Retention.DefaultDuration))
 			duration = 24 * time.Hour
 		}
-		if gs.CreationTimestamp.Add(duration).Before(time.Now()) {
+		retentionStart := r.getInactiveSince(&gs)
+		if retentionStart.Add(duration).Before(time.Now()) {
 			log.Info("Retention period expired, deleting GameService", "name", gs.Name)
 			if err := r.Delete(ctx, &gs); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
 		}
-		requeueAfter := time.Until(gs.CreationTimestamp.Add(duration))
+		requeueAfter := time.Until(retentionStart.Add(duration))
 		log.Info("Retention period active, will auto-delete", "requeueAfter", requeueAfter)
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
@@ -210,6 +211,15 @@ func (r *GameServiceReconciler) setCondition(gs *zzrrv1alpha1.GameService, condT
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
+}
+
+func (r *GameServiceReconciler) getInactiveSince(gs *zzrrv1alpha1.GameService) time.Time {
+	for _, c := range gs.Status.Conditions {
+		if c.Type == "TrafficActive" && c.Status == metav1.ConditionFalse {
+			return c.LastTransitionTime.Time
+		}
+	}
+	return gs.CreationTimestamp.Time
 }
 
 func (r *GameServiceReconciler) finalize(ctx context.Context, gs *zzrrv1alpha1.GameService) (ctrl.Result, error) {
