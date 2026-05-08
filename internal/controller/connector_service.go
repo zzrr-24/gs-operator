@@ -9,6 +9,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -58,6 +60,15 @@ func (m *ConnectorServiceManager) EnsureService(ctx context.Context, pod *corev1
 				"app.kubernetes.io/managed-by": "gs-operator",
 				"gs-connector-ordinal":         ordinal,
 			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "v1",
+					Kind:               "Pod",
+					Name:               pod.Name,
+					UID:                pod.UID,
+					BlockOwnerDeletion: ptr.To(false),
+				},
+			},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
@@ -90,9 +101,14 @@ func (m *ConnectorServiceManager) EnsureService(ctx context.Context, pod *corev1
 		}
 	}
 
+	if !ownerRefContains(existingSvc.OwnerReferences, pod.UID) {
+		needsUpdate = true
+	}
+
 	if needsUpdate {
 		existingSvc.Spec = desiredSvc.Spec
 		existingSvc.Labels = desiredSvc.Labels
+		existingSvc.OwnerReferences = mergeOwnerRefs(existingSvc.OwnerReferences, desiredSvc.OwnerReferences, pod.UID)
 		if err := m.Update(ctx, &existingSvc); err != nil {
 			return nil, fmt.Errorf("failed to update service %s: %w", svcName, err)
 		}
@@ -123,4 +139,26 @@ func (m *ConnectorServiceManager) DeleteOrphanServices(ctx context.Context, name
 		}
 	}
 	return nil
+}
+
+func ownerRefContains(refs []metav1.OwnerReference, uid types.UID) bool {
+	for _, ref := range refs {
+		if ref.UID == uid {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeOwnerRefs(existing, incoming []metav1.OwnerReference, podUID types.UID) []metav1.OwnerReference {
+	merged := make([]metav1.OwnerReference, 0, len(existing)+1)
+	seen := map[types.UID]bool{podUID: true}
+	merged = append(merged, incoming...)
+	for _, ref := range existing {
+		if !seen[ref.UID] {
+			seen[ref.UID] = true
+			merged = append(merged, ref)
+		}
+	}
+	return merged
 }
