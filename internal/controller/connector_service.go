@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -131,7 +132,7 @@ func (m *ConnectorServiceManager) DeleteOrphanServices(ctx context.Context, name
 	for _, svc := range svcList.Items {
 		ordinal := svc.Labels["gs-connector-ordinal"]
 		if !activeOrdinals[ordinal] {
-			if err := m.Delete(ctx, &svc); err != nil {
+			if err := m.Delete(ctx, &svc); err != nil && !apierrors.IsNotFound(err) {
 				log.Error(err, "Failed to delete orphan service", "service", svc.Name)
 				continue
 			}
