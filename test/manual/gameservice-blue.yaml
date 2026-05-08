@@ -13,7 +13,7 @@ spec:
     annotations:
       higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
       higress.ingress.kubernetes.io/proxy-send-timeout: "300s"
-      higress.ingress.kubernetes.io/rewrite-target: "/"
+        #higress.ingress.kubernetes.io/rewrite-target: "/"
   connectorNamespace: gsb
   deployGroup:
     role: blue

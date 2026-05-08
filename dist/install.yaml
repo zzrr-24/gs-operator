@@ -22,7 +22,20 @@ spec:
     singular: gameservice
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.deployGroup.role
+      name: Role
+      type: string
+    - jsonPath: .spec.deployGroup.active
+      name: Active
+      type: boolean
+    - jsonPath: .status.connectorCount
+      name: Pods
+      type: integer
+    - jsonPath: .status.connectorImage
+      name: Version
+      type: string
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         properties:
@@ -180,6 +193,8 @@ spec:
               connectorCount:
                 format: int32
                 type: integer
+              connectorImage:
+                type: string
               observedGeneration:
                 format: int64
                 type: integer
