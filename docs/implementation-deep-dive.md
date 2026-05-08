@@ -1,591 +1,928 @@
-# gs-operator 实现详解
+# gs-operator 实现深度解析
 
-本文档详细介绍 gs-operator 的实现思路、代码架构和关键技术决策。
+> 面向小白读者的完整项目解读，从零开始理解 Kubernetes Operator 如何工作。
 
 ---
 
 ## 目录
 
-1. [核心架构](#1-核心架构)
-2. [CRD 设计详解](#2-crd-设计详解)
-3. [Reconcile 流程](#3-reconcile-流程)
-4. [Connector Service 管理](#4-connector-service-管理)
-5. [Ingress 动态管理](#5-ingress-动态管理)
-6. [蓝绿发布实现](#6-蓝绿发布实现)
-7. [Pod Watch 机制](#7-pod-watch-机制)
-8. [保留期自动清理](#8-保留期自动清理)
-9. [RBAC 权限设计](#9-rbac-权限设计)
-10. [关键技术决策](#10-关键技术决策)
+1. [这个 Operator 是干嘛的](#1-这个-operator-是干嘛的)
+2. [核心概念：什么是蓝绿部署](#2-核心概念什么是蓝绿部署)
+3. [Operator 整体架构](#3-operator-整体架构)
+4. [自定义资源（CRD）：GameService](#4-自定义资源crdgameservice)
+5. [控制器主循环：Reconcile](#5-控制器主循环reconcile)
+6. [Service 管理](#6-service-管理)
+7. [Ingress 管理](#7-ingress-管理)
+8. [蓝绿切换与流量路由](#8-蓝绿切换与流量路由)
+9. [保留策略（自动过期删除）](#9-保留策略自动过期删除)
+10. [Finalizer 与优雅清理](#10-finalizer-与优雅清理)
+11. [事件驱动机制](#11-事件驱动机制)
+12. [构建与部署](#12-构建与部署)
+13. [测试体系](#13-测试体系)
+14. [踩坑记录与设计决策](#14-踩坑记录与设计决策)
 
 ---
 
-## 1. 核心架构
+## 1. 这个 Operator 是干嘛的
 
-### 整体设计
+**一句话概括**：gs-operator 是一个 Kubernetes Operator，它为一组 StatefulSet 中的 Pod 自动创建 Headless Service，并把它们注册到 Ingress 上，支持**蓝绿部署**和**自动过期删除**。
+
+**实际场景**：假设你有一组游戏服务器（connector pods），每个 Pod 都需要一个独立的网络入口。同时你希望：
+- 有一个"蓝"环境和"绿"环境，可以无缝切换流量
+- 不活跃的环境在 24 小时后自动清理
+
+这个 Operator 就是干这个的。
+
+### 它管理的资源
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Kubernetes Cluster                        │
-│                                                                │
-│  ┌──────────────────────┐   ┌──────────────────────────────┐   │
-│  │     GameService CR    │   │    GameService CR           │   │
-│  │  name: blue           │   │  name: green                │   │
-│  │  active: true         │   │  active: false              │   │
-│  │  connectorNs: blue    │   │  connectorNs: green         │   │
-│  └──────────┬───────────┘   └──────────┬───────────────────┘   │
-│             │                          │                        │
-│             └──────────┬───────────────┘                        │
-│                        ▼                                        │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              gs-operator (Controller)                    │   │
-│  │                                                         │   │
-│  │  Reconcile: ① 获取 Pod → ② 创建 Service → ③ 管理 Ingress │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                        │                                        │
-│         ┌──────────────┼──────────────┐                        │
-│         ▼              ▼              ▼                        │
-│  ┌───────────┐  ┌───────────┐  ┌───────────┐                  │
-│  │ Pod       │  │ Service   │  │ Ingress   │                  │
-│  │ connector │  │ per-pod   │  │ dynamic   │                  │
-│  │ watch     │  │ manage    │  │ path list │                  │
-│  └───────────┘  └───────────┘  └───────────┘                  │
-└─────────────────────────────────────────────────────────────────┘
+GameService CR (你写的 YAML)
+    │
+    ├── 自动创建/删除 Service（每个 connector Pod 一个）
+    │     connector-0-svc → Pod connector-0
+    │     connector-1-svc → Pod connector-1
+    │     ...
+    │
+    └── 自动创建/更新 Ingress
+         game-ingress-blue  → 包含所有 blue 环境 Pod 的路由路径
+         game-ingress-green → 包含所有 green 环境 Pod 的路由路径
 ```
-
-### 职责分离
-
-Operator 的三个核心职责被拆分为三个独立的文件，每个文件一个明确的职责：
-
-| 文件 | 职责 | 核心操作 |
-|------|------|---------|
-| `gameservice_controller.go` | 总控调度 | Reconcile 入口、条件更新、保留期管理 |
-| `connector_service.go` | Pod 与 Service | 列举 Pod、创建/删除 Service |
-| `ingress_manager.go` | Ingress 管理 | 创建/更新/删除 Ingress、Path 列表同步 |
-
-### 为什么不把这些逻辑合并？
-
-三个文件各自聚焦一个领域：
-- `connector_service.go` 只关心 Pod 与 Service 的关系
-- `ingress_manager.go` 只关心 Ingress 资源的构建
-- `gameservice_controller.go` 只关心业务流程编排
-
-这样每个文件可以独立理解和测试，修改一个不影响另一个。
 
 ---
 
-## 2. CRD 设计详解
+## 2. 核心概念：什么是蓝绿部署
 
-### GameServiceSpec
-
-```go
-type GameServiceSpec struct {
-    Ingress            IngressConfig      `json:"ingress"`            // Ingress 配置
-    ConnectorNamespace string             `json:"connectorNamespace"` // 目标命名空间
-    DeployGroup        DeployGroupConfig  `json:"deployGroup"`        // 蓝绿发布配置
-    Retention          *RetentionConfig   `json:"retention,omitempty"`// 保留策略
-}
-```
-
-#### IngressConfig
-
-```go
-type IngressConfig struct {
-    Host             string            `json:"host"`
-    IngressClassName string            `json:"ingressClassName"`
-    PathType         string            `json:"pathType"`
-    PathPrefix       string            `json:"pathPrefix"`
-    Port             int32             `json:"port"`
-    TLS              *TLSConfig        `json:"tls,omitempty"`
-    Annotations      map[string]string `json:"annotations,omitempty"`
-}
-```
-
-**设计思路：** IngressConfig 的字段与 Kubernetes Ingress Spec 的对应关系：
+蓝绿部署（Blue-Green Deployment）是一种零停机发布策略：
 
 ```
-CR 字段                    → Ingress 字段
-ingress.host              → spec.rules[0].host
-ingress.ingressClassName  → spec.ingressClassName
-ingress.pathType          → spec.rules[0].http.paths[].pathType
-ingress.pathPrefix + pod ordinal
-                           → spec.rules[0].http.paths[].path
-ingress.port              → spec.rules[0].http.paths[].backend.service.port.number
-ingress.tls.secretName    → spec.tls[].secretName
-ingress.annotations       → metadata.annotations
+       用户请求
+          │
+    ┌─────▼─────┐
+    │  Ingress   │  ← 入口网关，决定流量走向
+    └─────┬─────┘
+          │
+    ┌─────▼─────┐
+    │  active=   │  ← 当前活跃的部署组
+    │  true      │
+    └─────┬─────┘
+          │
+    ┌─────▼─────┐     ┌──────────┐
+    │   Blue     │     │  Green   │  ← 备用部署组
+    │  (活跃)    │     │ (待命中) │     active=false
+    │  Pod 0-9   │     │ Pod 0-9  │
+    └───────────┘     └──────────┘
 ```
 
-Annotations 做成 `map[string]string` 透传而不是固化为具体字段，是为了兼容不同的 Ingress Controller（Higress、nginx-ingress 等各有不同的注解）。
-
-#### DeployGroupConfig
-
-```go
-type DeployGroupConfig struct {
-    Role   string `json:"role"`   // "blue" | "green"
-    Active bool   `json:"active"` // true=接收流量
-}
-```
-
-`active` 是整个蓝绿切换的触发开关。Operator 不关心版本号，只通过 active 判断当前应该由哪个 Ingress 接收流量。
-
-#### RetentionConfig
-
-```go
-type RetentionConfig struct {
-    Enabled         bool   `json:"enabled"`
-    DefaultDuration string `json:"defaultDuration"` // 如 "24h"
-}
-```
-
-保留期是蓝绿发布的安全网。非活跃环境保留一段时间供回滚，到期后 Operator 自动清理。
+- **活跃组**（active=true）：Ingress 指向这些 Pod，接收所有流量
+- **备用组**（active=false）：Pod 运行但在 Ingress 上没有路由，等待切换
+- **切换**：只需修改 CR 的 `spec.deployGroup.active` 字段，Operator 自动更新 Ingress
 
 ---
 
-## 3. Reconcile 流程
-
-### 完整流程
+## 3. Operator 整体架构
 
 ```
-Reconcile(Request)
-    │
-    ├─ 1. 获取 GameService 实例
-    │     └─ 不存在 → 返回（资源已删除）
-    │
-    ├─ 2. 列举 ConnectorNamespace 中所有 Connector Pod
-    │     └─ 按标签 adventure=connector 筛选
-    │
-    ├─ 3. 过滤running/pending状态的 Pod，提取序号
-    │
-    ├─ 4. 对每个 Pod 确保 Serivice 存在
-    │     └─ ServiceName: connector-{ordinal}-svc
-    │
-    ├─ 5. 删除孤儿 Service（对应 Pod 已经不存在的）
-    │
-    ├─ 6. 判断 deployGroup.active:
-    │     ├─ true  → 创建/更新 Ingress
-    │     └─ false → 删除 Ingress
-    │
-    ├─ 7. 更新 Status Conditions
-    │
-    ├─ 8. 处理保留期逻辑
-    │     └─ active=false + retention.enabled:
-    │         ├─ 未到期 → RequeueAfter（定时检查）
-    │         └─ 已到期 → 删除 CR 和 Ingress
-    │
-    └─ 9. 返回
+┌─────────────────────────────────────────────────────────┐
+│                    Kubernetes Cluster                    │
+│                                                         │
+│  ┌──────────────┐     ┌──────────────────┐              │
+│  │ GameService  │────▶│  Controller      │              │
+│  │    CR        │     │  (Reconciler)    │              │
+│  └──────────────┘     └──────┬───────────┘              │
+│                              │                           │
+│              ┌───────────────┼───────────────┐          │
+│              │               │               │          │
+│         ┌────▼────┐   ┌─────▼──────┐  ┌─────▼──────┐  │
+│         │ Service  │   │  Ingress   │  │    Pod     │  │
+│         │ Manager  │   │  Manager   │  │  Watcher   │  │
+│         └─────────┘   └────────────┘  └────────────┘  │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │  次级资源                                          │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌───────────────┐   │  │
+│  │  │connector │  │connector │  │game-ingress-  │   │  │
+│  │  │ -0-svc   │  │ -1-svc   │  │    blue       │   │  │
+│  │  └──────────┘  └──────────┘  └───────────────┘   │  │
+│  └──────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 触发条件
+### 项目文件结构
+
+```
+gs-operator/
+├── api/v1alpha1/
+│   └── gameservice_types.go      # CRD 结构定义
+├── cmd/
+│   └── main.go                    # 程序入口，启动 Manager
+├── internal/controller/
+│   ├── gameservice_controller.go  # 核心调和循环
+│   ├── connector_service.go       # Service 创建/删除管理
+│   └── ingress_manager.go         # Ingress 创建/更新/删除管理
+├── config/
+│   ├── crd/bases/                 # 自动生成的 CRD YAML
+│   ├── rbac/                      # RBAC 权限配置
+│   ├── manager/manager.yaml       # Deployment 定义
+│   └── default/kustomization.yaml # Kustomize 聚合入口
+├── Makefile
+├── Dockerfile
+└── PROJECT                        # Kubebuilder 元数据
+```
+
+---
+
+## 4. 自定义资源（CRD）：GameService
+
+### CRD 是什么
+
+Kubernetes 原生资源（Pod、Service、Deployment）是写死的。如果你想要自己的资源类型，就得定义一个 **CRD（Custom Resource Definition）**——告诉 K8s "我要一种叫 GameService 的东西，它长这样"。
+
+### GameService 的 Spec（期望状态）
+
+用户创建一个 GameService YAML 来描述"我想要什么"：
+
+```yaml
+apiVersion: gs.zzrr.io/v1alpha1
+kind: GameService
+metadata:
+  name: blue
+  namespace: gsb
+spec:
+  connectorNamespace: gsb           # connector Pod 所在的 namespace
+  deployGroup:
+    role: blue                      # 部署组名称（blue 或 green）
+    active: true                    # 是否承载流量
+  ingress:
+    host: game.zzrr.io              # Ingress 域名
+    ingressClassName: higress       # Ingress Controller 类型
+    pathType: Prefix
+    pathPrefix: /connector          # 路径前缀
+    port: 80
+  retention:                        # 保留策略（可选）
+    enabled: true
+    defaultDuration: 24h            # 不活跃后 24 小时自动删除
+```
+
+### Spec 字段详解
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `connectorNamespace` | string | connector Pod 所在的 namespace |
+| `deployGroup.role` | enum(blue/green) | 蓝绿部署组标识 |
+| `deployGroup.active` | bool | true=承载流量，false=备用 |
+| `ingress.host` | string | Ingress 的域名 |
+| `ingress.ingressClassName` | string | 使用的 Ingress Controller（如 nginx、higress） |
+| `ingress.pathType` | enum | 路径匹配类型（Prefix/Exact） |
+| `ingress.pathPrefix` | string | 每个 connector 的 URL 前缀 |
+| `ingress.port` | int32 | connector Pod 的服务端口 |
+| `retention.enabled` | bool | 是否启用自动过期 |
+| `retention.defaultDuration` | string | 过期时长，如 "24h" |
+
+### Status（实际状态）
+
+Operator 通过 Status 字段报告当前状况：
+
+```yaml
+status:
+  conditions:
+  - type: Available           # 资源是否可用
+    status: "True"
+    reason: AllIngressPathsReady
+  - type: TrafficActive       # 是否正在承载流量
+    status: "True"
+    reason: Active
+  connectorCount: 10          # 当前活跃的 connector 数量
+  connectorImage: nginx:alpine # connector 容器镜像名
+  observedGeneration: 5       # 已处理的 CR 版本号
+```
+
+### 代码中的类型定义
+
+`api/v1alpha1/gameservice_types.go` 定义了 Go 结构体，通过 `+kubebuilder` 注释标记：
 
 ```go
-// 通过 SetupWithManager 注册
+// +kubebuilder:object:root=true           // ← 告诉 K8s: 这是一个顶层资源
+// +kubebuilder:subresource:status         // ← 启用 /status 子资源（Status 独立更新）
+// +kubebuilder:printcolumn:name="Role",type=string,JSONPath=".spec.deployGroup.role"
+type GameService struct {
+    metav1.TypeMeta   `json:",inline"`
+    metav1.ObjectMeta `json:"metadata,omitempty"`
+    Spec              GameServiceSpec   `json:"spec"`
+    Status            GameServiceStatus `json:"status,omitempty"`
+}
+```
+
+这些注释在运行 `make manifests` 时被 `controller-gen` 读取，自动生成 CRD YAML。**不要手改生成的 YAML。**
+
+---
+
+## 5. 控制器主循环：Reconcile
+
+### 什么是 Reconcile
+
+Reconcile（调和）是 Operator 的核心——一种"看看现在是什么样子，改到期望的样子"的循环。
+
+每当你创建、修改 GameService CR，或有 connector Pod 变化时，Kubernetes 会调用 `Reconcile` 方法。
+
+### Reconcile 的完整流程
+
+以下是 `gameservice_controller.go` 中 `Reconcile` 方法的执行步骤：
+
+```
+用户创建/修改 GameService CR
+        │
+        ▼
+┌──────────────────────────────────┐
+│ Step 1: Get GameService CR       │  从 API Server 获取最新状态
+│                                 │
+│ 如果 CR 已被删除？              │
+│   └→ finalize() 清理所有资源    │
+│                                 │
+│ 如果没有 finalizer？            │
+│   └→ 添加 finalizer，返回       │  finalizer 防止 CR 被直接删除
+└────────┬─────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────┐
+│ Step 2: List Connector Pods      │  查找 connectorNamespace 下带
+│                                 │  label "adventure=connector" 的 Pod
+│  过滤条件:                       │
+│  - Phase = Running 或 Pending    │
+│  - 提取 ordinal（从 pod 名）     │  connector-0 → "0"
+└────────┬─────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────┐
+│ Step 3: Ensure Services          │  并发 5 路，为每个 Pod 确保
+│                                 │  对应的 Service 存在且正确
+│  并发控制: semaphore(5)          │
+│  错误处理: 单个失败不中断         │
+└────────┬─────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────┐
+│ Step 4: Delete Orphan Services   │  删除没有对应 Pod 的 Service
+│                                 │  （通过 ordinal 匹配）
+└────────┬─────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────┐
+│ Step 5: Reconcile Ingress        │
+│                                 │
+│  如果 active=true:               │
+│    → 创建/更新 Ingress           │  路径指向每个 connector-svc
+│    → setCondition Available=True │
+│    → setCondition TrafficActive  │
+│        =True                     │
+│                                 │
+│  如果 active=false:              │
+│    → 删除 Ingress               │
+│    → setCondition TrafficActive  │
+│        =False                    │
+└────────┬─────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────┐
+│ Step 6: Update Status            │  更新 connectorCount、
+│                                 │  connectorImage、observedGeneration
+└────────┬─────────────────────────┘
+         │
+         ▼
+┌──────────────────────────────────┐
+│ Step 7: Retention Check          │
+│                                 │
+│  如果 active=false 且 retention   │
+│  已启用:                         │
+│    → 计算过期时间                │
+│    → 如果已过期 → 删除 CR       │
+│    → 如果未过期 → requeueAfter   │
+└────────┬─────────────────────────┘
+         │
+         ▼
+      返回 ctrl.Result{}
+```
+
+### 关键代码解读
+
+**并发控制**：使用 `golang.org/x/sync/errgroup` + `semaphore` 实现最多 5 路并发的 Service 创建：
+
+```go
+const maxConcurrency = 5
+sem := semaphore.NewWeighted(maxConcurrency)
+eg, egCtx := errgroup.WithContext(ctx)
+
+for i := range pods {
+    pod := pods[i]
+    eg.Go(func() error {
+        sem.Acquire(egCtx, 1)     // 获取许可证，最多 5 个 goroutine
+        defer sem.Release(1)
+        // ... EnsureService ...
+    })
+}
+eg.Wait()  // 等待所有 goroutine 完成
+```
+
+**为什么需要并发**：当 Pod 数量很大时（如 50 个），串行创建 Service 会非常慢。并发 5 路可以显著提速。
+
+---
+
+## 6. Service 管理
+
+`connector_service.go` 负责管理每个 connector Pod 的专属 Service。
+
+### Service 命名规则
+
+```
+Pod 名称: connector-0
+  ↓
+提取 ordinal: "0"（从最后一个 "-" 后面截取）
+  ↓
+Service 名称: connector-0-svc
+```
+
+### EnsureService 流程
+
+```
+EnsureService(ctx, pod, port)
+        │
+        ▼
+  ┌────────────────┐
+  │ 构建 desiredSvc │  ← 包含 Labels、OwnerReference、Selector、Ports
+  └───────┬────────┘
+          │
+          ▼
+  ┌──────────────────┐
+  │ Get 现有 Service  │
+  └───────┬──────────┘
+          │
+    存在？ │  不存在？
+    ┌─────┴─────┐
+    │           │
+    ▼           ▼
+  比较：      Create(desiredSvc)
+  - Ports      → 日志："Created Service"
+  - Labels
+  - OwnerRef
+    │
+ 需要更新？→ Update → 日志："Updated Service"
+ 不需要？  → 跳过
+```
+
+### OwnerReference 机制
+
+**这是本项目的关键设计之一。** 每个 Service 都持有对应 Pod 的 OwnerReference：
+
+```go
+desiredSvc := &corev1.Service{
+    ObjectMeta: metav1.ObjectMeta{
+        OwnerReferences: []metav1.OwnerReference{
+            {
+                APIVersion:         "v1",
+                Kind:               "Pod",
+                Name:               pod.Name,   // connector-0
+                UID:                pod.UID,    // Pod 的唯一 ID
+                BlockOwnerDeletion: ptr.To(false),  // 不阻止 Pod 被删除
+            },
+        },
+    },
+}
+```
+
+**OwnerReference 的作用**：
+- 当 StatefulSet 缩容删除 Pod 时，Kubernetes 垃圾回收器（GC）会自动级联删除对应的 Service
+- `BlockOwnerDeletion: false` 确保 Pod 可以立即被删除，不必等待 Service 先删完
+- 如果 Pod 被重新创建（新 UID），`ownerRefContains` 检查会发现 OwnerRef 不匹配，触发 Update
+
+**补充**：Service 还通过 label selector `statefulset.kubernetes.io/pod-name` 精准指向目标 Pod，实现一对一绑定。
+
+### 辅助函数
+
+- `ownerRefContains(refs, uid)` — 检查 Service 是否已持有指定 Pod 的 OwnerReference
+- `mergeOwnerRefs(existing, incoming, podUID)` — 合并新旧 OwnerReference，保留其他可能的 owner
+
+### DeleteOrphanServices
+
+除了 GC 自动清理外，Operator 也会在每次 Reconcile 时主动检查并删除孤儿 Service：
+
+```go
+func DeleteOrphanServices(ctx, namespace, activeOrdinals) {
+    // 1. List 所有的 managed-by=gs-operator 标签的 Service
+    // 2. 对每个 Service，提取其 gs-connector-ordinal label
+    // 3. 如果该 ordinal 不在 activeOrdinals 中 → 删除
+    // 4. 如果 Delete 返回 NotFound → 忽略（GC 已删除了）
+}
+```
+
+**两层保障**：OwnerReference（GC 自动清理） + DeleteOrphanServices（Operator 主动清理），确保 Service 能被及时清除。
+
+---
+
+## 7. Ingress 管理
+
+`ingress_manager.go` 负责管理 Ingress 资源。
+
+### Ingress 命名规则
+
+```
+DeployGroup.Role = "blue" → Ingress 名称: game-ingress-blue
+DeployGroup.Role = "green" → Ingress 名称: game-ingress-green
+```
+
+### 路径构建
+
+每个 connector Pod 对应一条 Ingress 路径：
+
+```
+Pod ordinal "0" + PathPrefix "/connector" → 路径: /connector0
+Pod ordinal "1" + PathPrefix "/connector" → 路径: /connector1
+...
+```
+
+生成的 Ingress 路由规则类似：
+
+```yaml
+spec:
+  rules:
+  - host: game.zzrr.io
+    http:
+      paths:
+      - path: /connector0
+        backend:
+          service:
+            name: connector-0-svc
+            port:
+              number: 80
+      - path: /connector1
+        backend:
+          service:
+            name: connector-1-svc
+            port:
+              number: 80
+      ...
+```
+
+### ReconcileIngress 流程
+
+```
+ReconcileIngress(ctx, gs, ordinals)
+        │
+        ▼
+  ┌──────────────────┐
+  │ 构建 desiredIngress│  ← 完整 paths、TLS、Labels、Annotations
+  └───────┬──────────┘
+          │
+          ▼
+  ┌──────────────────────┐
+  │ 设置 OwnerReference  │  ← 仅当 gs.Namespace == connectorNamespace
+  └───────┬──────────────┘
+          │
+          ▼
+  ┌──────────────────┐
+  │ Get 现有 Ingress  │
+  └───────┬──────────┘
+          │
+    存在？ │  不存在？
+    ┌─────┴─────┐
+    │           │
+    ▼           ▼
+  覆盖：      Create → "Created Ingress"
+  - Spec       │
+  - Annotations│
+  - Labels     │
+    │           │
+    ▼           ▼
+  Update → "Updated Ingress, paths: N"
+```
+
+### OwnerReference 跨 Namespace 注意
+
+OwnerReference 只能在同一 namespace 中生效。如果 `GameService` CR 的 namespace 和 `connectorNamespace` 不同，则**不设置** OwnerReference，仅依靠 Labels 管理跨 namespace 的 Ingress。
+
+---
+
+## 8. 蓝绿切换与流量路由
+
+### 切换原理
+
+蓝绿部署的核心是 **Ingress**。Operator 通过 Ingress 控制哪个部署组接收流量：
+
+```
+       用户请求 game.zzrr.io/connector0
+                    │
+              ┌─────▼─────┐
+              │  Ingress   │
+              └─────┬─────┘
+                    │
+         根据 game-ingress-{role} 决定路由
+                    │
+         ┌──────────┴──────────┐
+         │                     │
+    Blue 活跃时             Green 活跃时
+    game-ingress-blue      game-ingress-green
+    路由到 connector-*-svc   路由到 connector-*-svc
+   (gsb namespace)        (gsg namespace)
+```
+
+### 切换时的 Reconcile 流程
+
+```
+kubectl patch gameservice blue -n gsb --type merge \
+  -p '{"spec":{"deployGroup":{"active":false}}}'
+  
+kubectl patch gameservice green -n gsg --type merge \
+  -p '{"spec":{"deployGroup":{"active":true}}}'
+```
+
+**Blue 的 Reconcile:**
+1. `DeployGroup.Active = false`
+2. → DeleteIngress（删除 game-ingress-blue）
+3. → setCondition TrafficActive=False
+
+**Green 的 Reconcile:**
+1. `DeployGroup.Active = true`
+2. → 列出 green namespace 下的 connector Pods
+3. → 为每个 Pod 确保 Service
+4. → ReconcileIngress（创建 game-ingress-green，包含所有路径）
+5. → setCondition TrafficActive=True
+
+**结果**：流量从 blue 无缝切换到 green。
+
+### Status Condition 详解
+
+| Condition 类型 | 什么时候 True | 什么时候 False |
+|---------------|-------------|---------------|
+| `Available` | Ingress 路径已同步 | Ingress 操作失败 |
+| `TrafficActive` | 此部署组正在接收流量（active=true） | 此部署组是后备（active=false） |
+
+`setCondition` 方法确保只在状态真正变化时才更新 `LastTransitionTime`，避免不必要的写操作。
+
+---
+
+## 9. 保留策略（自动过期删除）
+
+### 设计意图
+
+当 blue 切换到 green 后，blue 变成了 `active=false`。一段时间后 blue 旧环境不再需要。保留策略允许自动删除不活跃的部署组。
+
+### 计时器起点
+
+使用 `TrafficActive=False` Condition 的 `LastTransitionTime` 作为倒计时起点：
+
+```go
+func getInactiveSince(gs *GameService) time.Time {
+    for _, c := range gs.Status.Conditions {
+        if c.Type == "TrafficActive" && c.Status == metav1.ConditionFalse {
+            return c.LastTransitionTime.Time  // 最后一次变成 inactive 的时刻
+        }
+    }
+    return gs.CreationTimestamp.Time  // 兜底
+}
+```
+
+### 为什么不用 CreationTimestamp
+
+- `CreationTimestamp` 是 CR 创建时由 K8s 设置的，永不改变
+- 如果用 `CreationTimestamp`，blue 和 green 的过期时间会几乎相同（因为它们差不多同时创建）
+- 每次蓝绿切换时，`TrafficActive` condition 的 `LastTransitionTime` 会更新，倒计时重新开始
+
+### 保留逻辑
+
+```
+if active=false 且 retention.enabled=true:
+    duration = ParseDuration(retention.defaultDuration)  // 如 24h
+    retentionStart = getInactiveSince()
+    
+    if retentionStart + duration < now:
+        → 删除 GameService CR（触发 finalize 清理所有资源）
+    else:
+        → requeueAfter = time.Until(retentionStart + duration)
+        → 日志: "Retention period active, will auto-delete, requeueAfter: 23h50m"
+```
+
+---
+
+## 10. Finalizer 与优雅清理
+
+### Finalizer 是什么
+
+Finalizer 是 Kuberentes 的一种保护机制：带 Finalizer 的 CR 被删除时，只会设置 `DeletionTimestamp`，不会立即从 etcd 移除。只有当所有 Finalizer 被移除后，CR 才真正删除。
+
+### 为什么需要 Finalizer
+
+Operator 创建了 Service 和 Ingress 这些外部资源。如果 CR 被直接删除而没有清理这些资源，它们会成为"孤儿资源"。
+
+### Finalize 流程
+
+```
+用户执行 kubectl delete gameservice blue
+        │
+        ▼
+K8s 设置 DeletionTimestamp，不实际上删除（有 Finalizer 保护）
+        │
+        ▼
+Reconcile 检测到 DeletionTimestamp != nil
+        │
+        ▼
+  ┌───────────────────────┐
+  │ finalize()            │
+  │                       │
+  │ 1. DeleteIngress      │  删除 game-ingress-blue
+  │                       │
+  │ 2. 列出所有 managed   │
+  │    Service            │
+  │                       │
+  │ 3. 逐个 Delete        │  忽略 NotFound（可能已被 GC 删除）
+  │                       │
+  │ 4. RemoveFinalizer    │  移除 Finalizer
+  │                       │
+  │ 5. Update(gs)         │  K8s 检测到 Finalizer 已移除，真正删除 CR
+  └───────────────────────┘
+```
+
+### 添加 Finalizer 的时机
+
+在 CR 第一次被 Reconcile 时（第 59-66 行），如果没有 Finalizer 就添加，然后立即返回。下一次 Reconcile 再执行正常的业务逻辑：
+
+```go
+if !controllerutil.ContainsFinalizer(&gs, gameServiceFinalizer) {
+    controllerutil.AddFinalizer(&gs, gameServiceFinalizer)
+    r.Update(ctx, &gs)
+    return ctrl.Result{}, nil  // ← requeue，下次再执行业务逻辑
+}
+```
+
+---
+
+## 11. 事件驱动机制
+
+### SetupWithManager
+
+这是控制器和 Kubernetes 系统的"接线"：
+
+```go
 func (r *GameServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+    // 注册字段索引：通过 connectorNamespace 反向查找 GameService
+    mgr.GetFieldIndexer().IndexField(...)
+
     return ctrl.NewControllerManagedBy(mgr).
-        For(&zzrrv1alpha1.GameService{}).              // GameService CR 变更
-        Watches(
-            &corev1.Pod{},
-            handler.EnqueueRequestsFromMapFunc(r.mapConnectorPodToGameService),  // Pod 变更
+        For(&GameService{}).            // 主资源：GameService 变更时触发
+        Watches(&Pod{},                 // 次级资源：Pod 变更时触发
+            handler.EnqueueRequestsFromMapFunc(r.mapConnectorPodToGameService),
         ).
         Named("gameservice").
         Complete(r)
 }
 ```
 
-为什么 Watch Pod？因为 Connector Pod 是由外部（ArgoCD/用户）管理的 StatefulSet，Operator 需要感知 Pod 创建/删除来调整 Service 和 Ingress。
+### 什么事件会触发 Reconcile
+
+| 事件 | 触发方式 | 说明 |
+|------|---------|------|
+| GameService CR 创建/修改 | `.For(&GameService{})` | 用户改 YAML |
+| connector Pod 创建 | `.Watches(&Pod{})` | StatefulSet 扩容 |
+| connector Pod 删除 | `.Watches(&Pod{})` | StatefulSet 缩容 |
+| connector Pod 状态变化 | `.Watches(&Pod{})` | Pod 从 Pending → Running |
 
 ### mapConnectorPodToGameService
 
+这个函数是 Pod 事件和 GameService 之间的桥梁：
+
 ```go
-func (r *GameServiceReconciler) mapConnectorPodToGameService(ctx, obj) []reconcile.Request {
-    // 只处理 adventure=connector 标签的 Pod
-    // 查找 connectorNamespace 匹配的 GameService CR
-    // 返回这些 CR 的 Request
+func mapConnectorPodToGameService(ctx, obj) []reconcile.Request {
+    pod := obj.(*corev1.Pod)
+    if pod.Labels["adventure"] != "connector" {
+        return nil  // 不是 connector Pod，忽略
+    }
+    
+    // 通过字段索引查找 connectorNamespace 匹配的所有 GameService
+    List(&GameServiceList{}, MatchingFields{"spec.connectorNamespace": pod.Namespace})
+    
+    // 把找到的 GameService 都加入 reconcile 队列
+    return []reconcile.Request{...}
 }
 ```
 
-这实现了 **Pod → CR 的关联**：当 connector 命名空间中 Pod 变化时，自动触发相关 CR 的 Reconcile。
+**关键**：`spec.connectorNamespace` 字段索引是在 `SetupWithManager` 中注册的。这样就能快速从 Pod 所在的 namespace 找到关联的 GameService。
+
+### 不需要 Watch Service 和 Ingress
+
+Service 和 Ingress 的变更（包括被 GC 删除）不触发 Reconcile。因为：
+- Service 由 `EnsureService` 在每次 Reconcile 中主动创建/更新
+- Orphan Service 由 `DeleteOrphanServices` 主动清理
+- Ingress 是同步管理的，不存在外部修改场景
 
 ---
 
-## 4. Connector Service 管理
+## 12. 构建与部署
 
-### 设计思路
-
-StatefulSet 的 Pod 有稳定的网络标识 `{statefulset}-{ordinal}`，但默认只有 headless Service 可以访问到单个 Pod。为了让 Ingress 可以路由到特定 Pod，需要为每个 Pod 创建一个独立的 ClusterIP Service。
-
-### service 创建逻辑
-
-```go
-func (m *ConnectorServiceManager) EnsureService(ctx, pod, port) (*Service, error) {
-    ordinal := GetPodOrdinal(pod.Name)
-    svcName := fmt.Sprintf("connector-%s-svc", ordinal)
-
-    // 先检查是否已存在
-    var existingSvc Service
-    if err := m.Get(ctx, {svcName, pod.Namespace}, &existingSvc); err == nil {
-        return &existingSvc, nil  // 已存在，直接返回
-    }
-
-    // 不存在则创建
-    svc := &Service{
-        Selector: {"statefulset.kubernetes.io/pod-name": pod.Name},  // 精确匹配单个 Pod
-        Ports: [{Port: port, TargetPort: port}],
-    }
-    return m.Create(ctx, svc)
-}
-```
-
-关键点：**`statefulset.kubernetes.io/pod-name` 是 K8s StatefulSet Controller 自动注入的标准标签**，精确匹配到单个 Pod，不需要自定义标签。
-
-### 孤儿 Service 清理
-
-```go
-func (m *ConnectorServiceManager) DeleteOrphanServices(ctx, namespace, activeOrdinals) {
-    // 列举所有 gs-operator 管理的 Service
-    // 对比 activeOrdinals 列表
-    // 删除不在列表中的 Service
-}
-```
-
-通过标签 `app.kubernetes.io/managed-by=gs-operator` 识别哪些 Service 是由 Operator 创建的，避免误删用户手动创建的 Service。
-
-### Pod 序号提取
-
-```go
-func GetPodOrdinal(podName string) string {
-    // 从 pod 名称 "connector-5" 提取 "5"
-    // 从最后一个 "-" 之后取子串
-    for i := len(podName) - 1; i >= 0; i-- {
-        if podName[i] == '-' {
-            return podName[i+1:]
-        }
-    }
-    return ""
-}
-```
-
----
-
-## 5. Ingress 动态管理
-
-### Ingress 结构
-
-Operator 为每个 GameService CR（每个角色）在 connector 所在命名空间中维护一个 Ingress。格式：
+### 构建流程
 
 ```
-Ingress Name: game-ingress-{role}
-Namespace: connectorNamespace
-Path Pattern: /{pathPrefix}{ordinal}
+Dockerfile（多阶段构建）
+├── Stage 1: golang:1.25
+│   ├── COPY go.mod go.sum → go mod download
+│   ├── COPY . → go build -o manager
+│   └── 产出: /workspace/manager（静态二进制）
+│
+└── Stage 2: gcr.io/distroless/static:nonroot
+    ├── COPY --from=builder /workspace/manager .
+    ├── USER 65532:65532（非 root 运行）
+    └── ENTRYPOINT ["/manager"]
 ```
 
-### 构建逻辑
+**为什么用 distroless**：最终镜像只有 20MB 左右，不含 shell、包管理器等，攻击面极小。
 
-```go
-func (m *IngressManager) ReconcileIngress(ctx, gs, ordinals) error {
-    ingressName := fmt.Sprintf("game-ingress-%s", gs.Spec.DeployGroup.Role)
-
-    paths := []HTTPIngressPath{}
-    for _, ord := range ordinals {
-        paths = append(paths, HTTPIngressPath{
-            Path:     fmt.Sprintf("%s%s", gs.Spec.Ingress.PathPrefix, ord),
-            PathType: pathType,
-            Backend: IngressBackend{
-                Service: &IngressServiceBackend{
-                    Name: fmt.Sprintf("connector-%s-svc", ord),
-                    Port: {Number: gs.Spec.Ingress.Port},
-                },
-            },
-        })
-    }
-
-    // 构建 Ingress 对象
-    desiredIngress := &Ingress{
-        Annotations: gs.Spec.Ingress.Annotations,          // 注解透传
-        IngressClassName: gs.Spec.Ingress.IngressClassName,
-        Rules: [{Host: gs.Spec.Ingress.Host, HTTP: {Paths: paths}}],
-        TLS: tlsConfig,
-    }
-
-    // 创建或更新
-    if exists {
-        existing.Spec = desiredIngress.Spec
-        existing.Annotations = desiredIngress.Annotations
-        existing.Labels = desiredIngress.Labels
-        m.Update(ctx, &existing)
-    } else {
-        m.Create(ctx, desiredIngress)
-    }
-}
-```
-
-### 为什么 Ingress 创建在 ConnectorNamespace 中？
-
-Kubernetes Ingress 的 `backend.service` 只能引用同命名空间的 Service。如果 Ingress 在 `default` 命名空间，`service: connector-0-svc` 只能解析到 `default` 命名空间的 Service。
-
-因此 Ingress 必须和 Service 在同一个命名空间。Operator 使用 CR 的 `connectorNamespace` 字段作为 Ingress 的目标命名空间。
-
-### 跨命名空间 OwnerReference 的处理
-
-由于 Ingress 和 GameService CR 可能在不同命名空间，`controllerutil.SetControllerReference` 不允许跨命名空间设置 OwnerReference。处理方式：
-
-```go
-if gs.Namespace == gs.Spec.ConnectorNamespace {
-    // 同命名空间时设置 OwnerReference，实现级联删除
-    controllerutil.SetControllerReference(gs, desiredIngress, m.Scheme)
-}
-// 跨命名空间时通过 Labels 管理
-```
-
----
-
-## 6. 蓝绿发布实现
-
-### 核心机制
-
-蓝绿发布通过 `deployGroup.active` 字段控制：
-
-```
-Blue.active = true  → 创建 game-ingress-blue 到 adventure-blue
-Green.active = false → 删除 game-ingress-green（如果存在）
-
-                     ↓ 手动 Patch ↓
-
-Blue.active = false → 删除 game-ingress-blue
-Green.active = true  → 创建 game-ingress-green 到 adventure-green
-```
-
-### 切换的幂等性
-
-```go
-if gs.Spec.DeployGroup.Active {
-    // 创建/更新 Ingress
-    ingMgr.ReconcileIngress(ctx, &gs, ordinals)
-} else {
-    // 删除 Ingress（如果有）
-    ingMgr.DeleteIngress(ctx, &gs)
-}
-```
-
-这样设计的好处：
-- 多次 Patch 同一状态是安全的（幂等）
-- 不存在两个 Ingress 争抢相同 Host 的问题
-- 切换时短暂的双 active 不会导致流量错误
-
-### 两个 CR 都 active 的处理
-
-切换操作是两个 Patch 命令：
+### 构建命令
 
 ```bash
-kubectl patch gameservice green --type merge -p '{"spec":{"deployGroup":{"active":true}}}'
-kubectl patch gameservice blue --type merge -p '{"spec":{"deployGroup":{"active":false}}}'
+# 构建镜像（podman 需加 --network host）
+docker build --network host -t registry.cn-hangzhou.aliyuncs.com/zzrr_images/gs-operator:v5 .
+
+# 推送到阿里云容器镜像仓库
+docker push registry.cn-hangzhou.aliyuncs.com/zzrr_images/gs-operator:v5
+
+# 部署到集群（kustomize 自动注入镜像地址）
+make deploy IMG=registry.cn-hangzhou.aliyuncs.com/zzrr_images/gs-operator:v5
 ```
 
-两个命令之间短暂存在双 active 的间隙。Operator 的行为：
+### Kustomize 部署清单
 
-```
-t1: blue.active=true (Ingress exists)
-    green.active=false (no Ingress)
-
-t2: blue.active=true (Ingress exists)   ← 第一次 patch
-    green.active=true (create Ingress)     green Ingress 创建
-    → 此时两个 Ingress 都存在但指向不同命名空间
-
-t3: blue.active=false (delete Ingress!) ← 第二次 patch
-    green.active=true (Ingress exists)     blue Ingress 删除
-    → 只有 green Ingress 存在
+`make deploy` 等价于：
+```bash
+cd config/manager && kustomize edit set image controller=${IMG}
+kustomize build config/default | kubectl apply -f -
 ```
 
-在 t2 时刻，Higress/Envoy 可能会在两个 Ingress 之间负载均衡。但在实际场景中，切换间隙极短（毫秒级），且新连接也只持续到 t3 前的极短时间。对于 WebSocket 场景，已有连接不受影响。
-
-### 保留期倒计时
-
-```go
-if !deployGroup.Active && retention.Enabled {
-    if creationTime + duration < now {
-        // 到期：删除 Ingress + 删除 CR
-        ingMgr.DeleteIngress(ctx, &gs)
-        r.Delete(ctx, &gs)
-        return
-    }
-    // 未到期：定时唤醒检查
-    requeueAfter = creationTime + duration - now
-    return ctrl.Result{RequeueAfter: requeueAfter}
-}
+`config/default/kustomization.yaml` 聚合的资源：
+```
+../crd          → CustomResourceDefinition（GameService）
+../rbac         → ServiceAccount、Role、RoleBinding、ClusterRole、ClusterRoleBinding
+../manager      → Namespace、Deployment
+metrics_service.yaml → Service（metrics 端点）
 ```
 
-`ctrl.Result{RequeueAfter: requeueAfter}` 告诉 controller-runtime 在指定时间后再次 Reconcile，实现定时唤醒检查。
+### 部署后验证
+
+```bash
+kubectl get pods -n gs-operator-system
+kubectl logs -n gs-operator-system deployment/gs-operator-controller-manager -c manager -f
+kubectl get gameservice -A -o wide
+```
+
+### 时区配置
+
+为让日志显示北京时间，在 Deployment 中设置了 `TZ` 环境变量：
+
+```yaml
+env:
+- name: TZ
+  value: Asia/Shanghai
+```
+
+效果：日志时间从 `2026-05-08T08:14:09Z` 变为 `2026-05-08T16:14:09+08:00`。
 
 ---
 
-## 7. Pod Watch 机制
+## 13. 测试体系
 
-### 为什么需要 Watch Pod？
+### 单元测试：EnvTest
 
-Connector StatefulSet 由 ArgoCD 或用户管理，Operator 不直接控制 Pod 的生命周期。但 Operator 需要感知 Pod 变化来：
-
-1. **Pod 创建** → 创建对应的 Service → 添加到 Ingress Path
-2. **Pod 删除** → 删除对应的 Service → 从 Ingress Path 移除
-3. **Pod 重建** → Service 自动更新 Endpoint（通过 Selector）
-
-### 实现方式
+使用 `controller-runtime/pkg/envtest` 框架，在测试代码中启动一个**真实的 K8s API Server + etcd**：
 
 ```go
-Watches(
-    &corev1.Pod{},
-    handler.EnqueueRequestsFromMapFunc(r.mapConnectorPodToGameService),
-)
-```
-
-这种方式叫做 **Cross-Resource Watch**：监听 Pod 变化，映射到 GameService CR 的 Reconcile Request。
-
-### 筛选逻辑
-
-```go
-func (r *GameServiceReconciler) mapConnectorPodToGameService(ctx, obj) []reconcile.Request {
-    // 1. 只处理 adventure=connector 标签的 Pod
-    if pod.Labels["adventure"] != "connector" {
-        return nil
-    }
-
-    // 2. 查找所有 GameService CR
-    var list zzrrv1alpha1.GameServiceList
-    r.List(ctx, &list)
-
-    // 3. 只触发 connectorNamespace 匹配的 CR
-    for _, gs := range list.Items {
-        if gs.Spec.ConnectorNamespace == pod.Namespace {
-            requests = append(requests, Request{...})
-        }
-    }
-    return requests
+testEnv = &envtest.Environment{
+    CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
 }
 ```
+
+**优势**：无需真实 K8s 集群，纯 Go 测试就能验证 CRUD 行为。
+
+### 测试用例（Ginkgo + Gomega）
+
+| 测试场景 | 验证内容 |
+|---------|---------|
+| CR 首次创建 | Finalizer 是否被添加 |
+| 无 connector Pod 时 | connectorCount=0，Available=True |
+| active=true → false 切换 | TrafficActive condition 变为 False |
+| GetPodOrdinal | 从 connector-0 提取 ordinal "0" |
+| BuildConnectorOrdinals | 去重排序 |
+
+### 测试生命周期
+
+```go
+BeforeEach → 准备测试数据
+    ↓
+It("should...") → 执行被测逻辑
+    ↓
+AfterEach → 清理 Finalizer + 删除 CR
+    ↓
+Eventually(...Should(BeTrue())) → 异步等待资源完全删除
+```
+
+### 手动测试
+
+`test/manual/README.md` 提供了手动验证流程：
+1. 扩容 StatefulSet → 检查 Ingress path 数量
+2. 缩容 StatefulSet → 检查 Svc 和 Ingress 自动更新
+3. 蓝绿切换 → 验证流量路由变化
 
 ---
 
-## 8. 保留期自动清理
+## 14. 踩坑记录与设计决策
 
-### 触发时机
+### 决策 1：OwnerReference vs 主动删除
 
-保留期清理在每次 Reconcile 的非活跃分支中执行：
+**问题**：缩容时 Service 删除很慢，每次 Reconcile 只删一个。
+
+**分析**：StatefulSet 缩容时 Pod 被标记 `DeletionTimestamp` 但 Phase 仍是 Running。Operator 将其计入 activeOrdinals，导致 Service 不被视为孤儿。
+
+**方案对比**：
+- 方案 A：排除 `DeletionTimestamp != nil` 的 Pod → 一次 Reconcile 批量清理
+- 方案 B：给 Service 添加 Pod 的 OwnerReference → K8s GC 自动级联删除
+
+**选择**：方案 B（OwnerReference）
+
+**原因**：OwnerReference 是 K8s 原生机制，Service 生命周期和 Pod 严格绑定，不依赖 Operator 主动清理。配合 `DeleteOrphanServices` 作为快速清理兜底。
+
+### 决策 2：保留计时器从 LastTransitionTime 开始
+
+**问题**：蓝绿切换后，保留计时器不重置，blue 和 green 共享相同的过期时间。
+
+**根因**：使用了不可变的 `CreationTimestamp` 作为计时起点。
+
+**修复**：改用 `TrafficActive=False` Condition 的 `LastTransitionTime`。每次切换时 LastTransitionTime 自动更新，计时器重新开始。
+
+### 决策 3：NotFound 不算 ERROR
+
+**问题**：OwnerReference 启用后，GC 可能先于 `DeleteOrphanServices` 删除 Service，导致 `m.Delete()` 返回 NotFound 被当作 ERROR 记录。
+
+**修复**：在 `DeleteOrphanServices` 和 `finalize` 中，`apierrors.IsNotFound(err)` 返回 true 时不报 ERROR，因为 GC 已完成工作。
+
+### 决策 4：并发控制（semaphore vs goroutine pool）
+
+**问题**：串行创建 Service 在 Pod 数量多时性能差。
+
+**选择**：`golang.org/x/sync/semaphore` + `errgroup`，限制并发数为 5。
+
+**原因**：轻量，无需引入 goroutine pool 依赖。5 路并发对 K8s API Server 压力可控。
+
+### 决策 5：不 Watch Service 和 Ingress
+
+**问题**：要不要像 watch Pod 一样 watch Service 和 Ingress 来加速响应？
+
+**选择**：不 Watch。
+
+**原因**：
+- Service 由 `EnsureService` 同步管理，不存在外部创建/修改的场景
+- Ingress 是 CR 的直接投影，CR 变就重建
+- 减少 Watch 数量可以减轻 controller-runtime cache 的内存和事件处理压力
+
+### 决策 6：Leader Election
+
+**原因**：如果 Operator 有多副本（高可用部署），同时只有一个活跃的 leader 执行 Reconcile，其他 standby。防止"脑裂"——多个 controller 同时操作同一资源。
 
 ```go
-if !gs.Spec.DeployGroup.Active && gs.Spec.Retention != nil && gs.Spec.Retention.Enabled {
-    // 检查是否到期
-    duration, _ := time.ParseDuration(gs.Spec.Retention.DefaultDuration)
-    if gs.CreationTimestamp.Add(duration).Before(time.Now()) {
-        // 到期：先删 Ingress，再删 CR
-        ingMgr.DeleteIngress(ctx, &gs)
-        r.Delete(ctx, &gs)
-        return ctrl.Result{}, nil
-    }
-    // 未到期：设置 RequeueAfter 定时检查
-    requeueAfter := time.Until(gs.CreationTimestamp.Add(duration))
-    return ctrl.Result{RequeueAfter: requeueAfter}, nil
-}
+LeaderElectionID: "74afd476.gs.zzrr.io"
 ```
 
-### 为什么不使用 Finalizer？
-
-Finalizer 适合资源删除前的清理动作。这里使用的是**定时到期自动删除**，用 `RequeueAfter` + 时间判断更直接。
-
-### 用户提前删除
-
-用户执行 `kubectl delete gameservice blue` 时，由于 Ingress 和 CR 可能在不同命名空间（跨 namespace 未设置 OwnerReference），Ingress 不会被级联删除。因此 Operator 需要在 Reconcile 中处理资源不存在的情况：
+### 决策 7：RBAC 最小权限
 
 ```go
-if err := r.Get(ctx, req.NamespacedName, &gs); err != nil {
-    if apierrors.IsNotFound(err) {
-        return ctrl.Result{}, nil  // CR 已被删除
-    }
-    return ctrl.Result{}, err
-}
-```
-
----
-
-## 9. RBAC 权限设计
-
-### 所需权限
-
-```go
-// +kubebuilder:rbac:groups=zzrr.gs.zzrr.io,resources=gameservices,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=zzrr.gs.zzrr.io,resources=gameservices/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=zzrr.gs.zzrr.io,resources=gameservices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 ```
 
-为什么要分这么细？
-
-| 资源 | 操作 | 原因 |
-|------|------|------|
-| `gameservices` | CRUD | 管理 CR 生命周期 |
-| `gameservices/status` | read+update | 更新 Status Conditions |
-| `pods` | read only | 只列举和 Watch Pod，不创建 |
-| `services` | CRUD | 创建/删除/更新 per-pod Service |
-| `ingresses` | CRUD | 创建/删除/更新 Ingress |
-| `events` | create+patch | 记录 Warning/Error 事件 |
-
-**最小权限原则**：只申请需要的权限。比如 Pod 只有 `get;list;watch` 没有 `create;update;delete`，因为 Operator 不管理 Pod 本身。
+- Pod：只读（get、list、watch），不修改 Pod
+- Service：全权限，创建/更新/删除
+- Ingress：全权限，创建/更新/删除
 
 ---
 
-## 10. 关键技术决策
+## 附录：常用命令速查
 
-### 为什么用 ClusterIP Service 而不是 Headless Service？
+```bash
+# 代码生成
+make manifests    # 从 marker 生成 CRD 和 RBAC
+make generate     # 生成 DeepCopy 方法
 
-Headless Service（`clusterIP: None`）的 DNS 解析直接返回 Pod IP，适合 StatefulSet 内部通信。但 Ingress 需要 ClusterIP Service 作为稳定的入口。
+# 开发
+make test         # 运行单元测试（envtest）
+make lint-fix     # 自动修复代码风格
 
-每个 Connector Pod 一个 ClusterIP Service 的设计，让 Ingress 可以通过 Service 名称精确路由到指定 Pod。
+# 构建部署
+export IMG=registry.cn-hangzhou.aliyuncs.com/zzrr_images/gs-operator:v5
+make docker-build IMG=$IMG   # 构建镜像
+make docker-push IMG=$IMG    # 推送镜像
+make deploy IMG=$IMG         # 部署到集群
 
-### 为什么 Ingress 放在 ConnectorNamespace？
+# 查看状态
+kubectl get gameservice -A -o wide
+kubectl get svc -n gsb -l app.kubernetes.io/managed-by=gs-operator
+kubectl get ingress -A -o wide
+kubectl logs -n gs-operator-system deployment/gs-operator-controller-manager -c manager -f
 
-Kubernetes Ingress 规范要求 `backend.service.name` 指向同一命名空间的 Service。如果 Ingress 和 Service 在不同命名空间，需要 Ingress Controller 的扩展机制（如 Higress McpBridge）才能工作。为保持通用性，选择将 Ingress 放在 Connector 的命名空间。
-
-### 为什么不用 Helm 管理两个 Namespace 的部署？
-
-蓝绿发布中的两个命名空间包含完整的游戏服（master/insideapi/webapi/connector），这些由 ArgoCD 管理。Operator 只负责 Ingress 层。职责分离的好处是：
-
-- Operator 不需要知道游戏服的具体配置
-- 游戏服变更不需要修改 Operator
-- 蓝绿切换不涉及 ArgoCD 应用的变化
-
-### 为什么 Watch Pod 而不是 Service？
-
-理论上 Watch Service 更直接（Service 变化时触发 Reconcile）。但 Pod 变化是更早的信号——Pod 创建后 Operator 可以立即创建 Service 和更新 Ingress。等 Service 变化再触发就慢了一步。
-
-### Higress 跨 Namespace 路由说明
-
-测试环境中 Higress 通过 NodePort 31546 暴露。实际生产环境中：
-
-- Higress Gateway 通常有 LoadBalancer IP
-- Ingress 的 Host 通过 DNS 解析到 Gateway IP
-- Higress 根据 Ingress 规则路由到对应命名空间的 Service
-
-### WebSocket 支持
-
-Connector 通常使用 WebSocket 连接。Ingress 需要正确设置代理超时参数：
-
-```yaml
-annotations:
-  higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
-  higress.ingress.kubernetes.io/proxy-send-timeout: "300s"
+# 蓝绿切换
+kubectl patch gameservice green -n gsg --type merge -p '{"spec":{"deployGroup":{"active":true}}}'
+kubectl patch gameservice blue -n gsb --type merge -p '{"spec":{"deployGroup":{"active":false}}}'
 ```
-
-这些注解通过 CR 的 `ingress.annotations` 透传到 Ingress，Operator 不做特殊处理。
-
----
-
-## 附录：文件清单
-
-| 文件 | 行数 | 说明 |
-|------|------|------|
-| `api/v1alpha1/gameservice_types.go` | ~62 | CRD 类型定义 |
-| `internal/controller/gameservice_controller.go` | ~200 | Reconcile 主逻辑 |
-| `internal/controller/connector_service.go` | ~110 | Service 管理 |
-| `internal/controller/ingress_manager.go` | ~140 | Ingress 管理 |
-| `cmd/main.go` | ~204 | 入口、注册 Controller |
-| `config/rbac/role.yaml` | ~71 | RBAC 权限（自动生成） |
-| `config/crd/bases/zzrr.gs.zzrr.io_gameservices.yaml` | ~300+ | CRD 定义（自动生成） |
