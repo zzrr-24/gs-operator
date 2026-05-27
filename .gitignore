@@ -28,3 +28,12 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# AI-related files
+AGENTS.md
+.custom-gcl.yml
+.openopencode/
+docs/superpowers/
+.superpowers/
+.opencode/
+.agents/

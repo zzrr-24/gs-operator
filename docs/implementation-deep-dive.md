@@ -149,6 +149,8 @@ metadata:
   namespace: gsb
 spec:
   connectorNamespace: gsb           # connector Pod 所在的 namespace
+  podLabelKey: app                  # 用于过滤 connector Pod 的标签 key
+  podLabelValue: connector          # 用于过滤 connector Pod 的标签 value
   deployGroup:
     role: blue                      # 部署组名称（blue 或 green）
     active: true                    # 是否承载流量
@@ -167,6 +169,8 @@ spec:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
+| `podLabelKey` | string | 用于识别 connector Pod 的标签 key |
+| `podLabelValue` | string | 用于识别 connector Pod 的标签 value |
 | `connectorNamespace` | string | connector Pod 所在的 namespace |
 | `deployGroup.role` | enum(blue/green) | 蓝绿部署组标识 |
 | `deployGroup.active` | bool | true=承载流量，false=备用 |
@@ -244,8 +248,8 @@ Reconcile（调和）是 Operator 的核心——一种"看看现在是什么样
          │
          ▼
 ┌──────────────────────────────────┐
-│ Step 2: List Connector Pods      │  查找 connectorNamespace 下带
-│                                 │  label "adventure=connector" 的 Pod
+│ Step 2: List Connector Pods      │  查找 connectorNamespace 下通过
+│                                 │  podLabelKey=podLabelValue 匹配的 Pod
 │  过滤条件:                       │
 │  - Phase = Running 或 Pending    │
 │  - 提取 ordinal（从 pod 名）     │  connector-0 → "0"
@@ -690,14 +694,11 @@ func (r *GameServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 ```go
 func mapConnectorPodToGameService(ctx, obj) []reconcile.Request {
     pod := obj.(*corev1.Pod)
-    if pod.Labels["adventure"] != "connector" {
-        return nil  // 不是 connector Pod，忽略
-    }
     
     // 通过字段索引查找 connectorNamespace 匹配的所有 GameService
     List(&GameServiceList{}, MatchingFields{"spec.connectorNamespace": pod.Namespace})
     
-    // 把找到的 GameService 都加入 reconcile 队列
+    // 对比每个 GS 的 podLabelKey/podLabelValue 与 pod 的 label 是否匹配
     return []reconcile.Request{...}
 }
 ```

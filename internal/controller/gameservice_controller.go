@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 	corev1 "k8s.io/api/core/v1"
@@ -68,7 +69,11 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	svcMgr := NewConnectorServiceManager(r.Client, r.Scheme)
 	ingMgr := NewIngressManager(r.Client, r.Scheme)
 
-	pods, err := svcMgr.ListConnectorPods(ctx, gs.Spec.ConnectorNamespace)
+	pods, err := svcMgr.ListConnectorPods(ctx,
+		gs.Spec.ConnectorNamespace,
+		gs.Spec.PodLabelKey,
+		gs.Spec.PodLabelValue,
+	)
 	if err != nil {
 		log.Error(err, "Failed to list connector pods")
 		r.Recorder.Event(&gs, corev1.EventTypeWarning, "PodListFailed", err.Error())
@@ -111,7 +116,10 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 
 		if err := eg.Wait(); err != nil {
-			log.Error(err, "Failed to ensure services")
+			log.Error(err, "Failed to ensure services, skipping remaining reconciliation")
+			r.Recorder.Event(&gs, corev1.EventTypeWarning, "ServiceEnsureFailed",
+				"Some services could not be ensured, will retry")
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -142,26 +150,34 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		r.setCondition(&gs, "TrafficActive", metav1.ConditionFalse, "Standby", "This deployment group is not receiving traffic")
 	}
 
-	gs.Status.ConnectorImage = ""
+	var connectorImage string
 	for i := range pods {
 		if pods[i].Status.Phase == corev1.PodRunning && len(pods[i].Spec.Containers) > 0 {
-			gs.Status.ConnectorImage = pods[i].Spec.Containers[0].Image
+			connectorImage = pods[i].Spec.Containers[0].Image
 			break
 		}
 	}
-	if gs.Status.ConnectorImage == "" {
+	if connectorImage == "" {
 		for i := range pods {
 			if pods[i].Status.Phase == corev1.PodPending && len(pods[i].Spec.Containers) > 0 {
-				gs.Status.ConnectorImage = pods[i].Spec.Containers[0].Image
+				connectorImage = pods[i].Spec.Containers[0].Image
 				break
 			}
 		}
 	}
 
-	gs.Status.ConnectorCount = int32(len(ordinals))
-	gs.Status.ObservedGeneration = gs.Generation
+	var latestGS zzrrv1alpha1.GameService
+	if err := r.Get(ctx, req.NamespacedName, &latestGS); err != nil {
+		log.Error(err, "Failed to re-fetch GameService before status update")
+		return ctrl.Result{}, err
+	}
 
-	if err := r.Status().Update(ctx, &gs); err != nil {
+	latestGS.Status.ConnectorImage = connectorImage
+	latestGS.Status.ConnectorCount = int32(len(ordinals))
+	latestGS.Status.ObservedGeneration = latestGS.Generation
+	latestGS.Status.Conditions = gs.Status.Conditions
+
+	if err := r.Status().Update(ctx, &latestGS); err != nil {
 		log.Error(err, "Failed to update status")
 		return ctrl.Result{}, err
 	}
@@ -175,7 +191,7 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				fmt.Sprintf("Invalid duration %q, using default 24h", gs.Spec.Retention.DefaultDuration))
 			duration = 24 * time.Hour
 		}
-		retentionStart := r.getInactiveSince(&gs)
+		retentionStart := r.getInactiveSince(log, &gs)
 		if retentionStart.Add(duration).Before(time.Now()) {
 			log.Info("Retention period expired, deleting GameService", "name", gs.Name)
 			if err := r.Delete(ctx, &gs); err != nil {
@@ -213,13 +229,15 @@ func (r *GameServiceReconciler) setCondition(gs *zzrrv1alpha1.GameService, condT
 	})
 }
 
-func (r *GameServiceReconciler) getInactiveSince(gs *zzrrv1alpha1.GameService) time.Time {
+func (r *GameServiceReconciler) getInactiveSince(log logr.Logger, gs *zzrrv1alpha1.GameService) time.Time {
 	for _, c := range gs.Status.Conditions {
 		if c.Type == "TrafficActive" && c.Status == metav1.ConditionFalse {
 			return c.LastTransitionTime.Time
 		}
 	}
-	return gs.CreationTimestamp.Time
+	log.Info("No TrafficActive=False condition found, starting retention timer from now",
+		"name", gs.Name, "namespace", gs.Namespace)
+	return time.Now()
 }
 
 func (r *GameServiceReconciler) finalize(ctx context.Context, gs *zzrrv1alpha1.GameService) (ctrl.Result, error) {
@@ -290,23 +308,25 @@ func (r *GameServiceReconciler) mapConnectorPodToGameService(ctx context.Context
 	if !ok {
 		return nil
 	}
-	if pod.Labels["adventure"] != "connector" {
-		return nil
-	}
+
+	log := log.FromContext(ctx)
 
 	var list zzrrv1alpha1.GameServiceList
 	if err := r.List(ctx, &list, client.MatchingFields{"spec.connectorNamespace": pod.Namespace}); err != nil {
+		log.Error(err, "Failed to map pod to GameService", "pod", pod.Name)
 		return nil
 	}
 
 	var requests []reconcile.Request
 	for _, gs := range list.Items {
-		requests = append(requests, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Name:      gs.Name,
-				Namespace: gs.Namespace,
-			},
-		})
+		if pod.Labels[gs.Spec.PodLabelKey] == gs.Spec.PodLabelValue {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      gs.Name,
+					Namespace: gs.Namespace,
+				},
+			})
+		}
 	}
 	return requests
 }

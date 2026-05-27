@@ -7,9 +7,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,15 +23,12 @@ func NewConnectorServiceManager(c client.Client, s *runtime.Scheme) *ConnectorSe
 	return &ConnectorServiceManager{Client: c, Scheme: s}
 }
 
-func (m *ConnectorServiceManager) ListConnectorPods(ctx context.Context, namespace string) ([]corev1.Pod, error) {
-	req, err := labels.NewRequirement("adventure", selection.Equals, []string{"connector"})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create label requirement: %w", err)
-	}
-	selector := labels.NewSelector().Add(*req)
-
+func (m *ConnectorServiceManager) ListConnectorPods(ctx context.Context, namespace, podLabelKey, podLabelValue string) ([]corev1.Pod, error) {
 	var pods corev1.PodList
-	if err := m.List(ctx, &pods, client.InNamespace(namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	if err := m.List(ctx, &pods,
+		client.InNamespace(namespace),
+		client.MatchingLabels{podLabelKey: podLabelValue},
+	); err != nil {
 		return nil, fmt.Errorf("failed to list connector pods: %w", err)
 	}
 	return pods.Items, nil

@@ -5,16 +5,19 @@ metadata:
   namespace: gsb
 spec:
   ingress:
-    host: game.zzrr.io
+    host: adventure.zzrr.io
+    #host: game.zzrr.io
     ingressClassName: higress
     pathType: Prefix
-    pathPrefix: "/connector"
-    port: 80
+    pathPrefix: "/wsgame"
+    port: 3010
     annotations:
       higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
       higress.ingress.kubernetes.io/proxy-send-timeout: "300s"
         #higress.ingress.kubernetes.io/rewrite-target: "/"
   connectorNamespace: gsb
+  podLabelKey: adventure
+  podLabelValue: connector
   deployGroup:
     role: blue
     active: true

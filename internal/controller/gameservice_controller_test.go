@@ -66,6 +66,8 @@ var _ = Describe("GameService Controller", func() {
 					PathPrefix:       "/connector",
 					Port:             80,
 				},
+				PodLabelKey:        "app",
+				PodLabelValue:      "connector",
 				ConnectorNamespace: testNs,
 				DeployGroup: zzrrv1alpha1.DeployGroupConfig{
 					Role:   "blue",

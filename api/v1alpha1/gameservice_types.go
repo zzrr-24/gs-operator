@@ -56,6 +56,14 @@ type GameServiceSpec struct {
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	PodLabelKey string `json:"podLabelKey"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	PodLabelValue string `json:"podLabelValue"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
 	ConnectorNamespace string `json:"connectorNamespace"`
 
 	// +kubebuilder:validation:Required

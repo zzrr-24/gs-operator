@@ -108,6 +108,12 @@ spec:
                 - pathType
                 - port
                 type: object
+              podLabelKey:
+                minLength: 1
+                type: string
+              podLabelValue:
+                minLength: 1
+                type: string
               retention:
                 properties:
                   defaultDuration:
@@ -123,6 +129,8 @@ spec:
             - connectorNamespace
             - deployGroup
             - ingress
+            - podLabelKey
+            - podLabelValue
             type: object
           status:
             properties:

@@ -64,3 +64,22 @@ spec:
   ports:
   - port: 80
     targetPort: 80
+---
+apiVersion: gs.zzrr.io/v1alpha1
+kind: GameService
+metadata:
+  name: game-green
+  namespace: default
+spec:
+  ingress:
+    host: game.example.com
+    ingressClassName: higress
+    pathType: Prefix
+    pathPrefix: "/connector"
+    port: 80
+  connectorNamespace: gsg
+  podLabelKey: app
+  podLabelValue: connector
+  deployGroup:
+    role: green
+    active: false
