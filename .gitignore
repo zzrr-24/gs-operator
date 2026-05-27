@@ -31,7 +31,7 @@ go.work
 
 # AI-related files
 AGENTS.md
-.custom-gcl.yml
+
 .openopencode/
 docs/superpowers/
 .superpowers/
