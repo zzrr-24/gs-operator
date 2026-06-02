@@ -80,11 +80,10 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	servingPods := filterServiceableConnectorPods(pods)
+
 	var podNames []string
-	for _, pod := range pods {
-		if pod.Status.Phase != corev1.PodRunning && pod.Status.Phase != corev1.PodPending {
-			continue
-		}
+	for _, pod := range servingPods {
 		podNames = append(podNames, pod.Name)
 	}
 
@@ -99,8 +98,8 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		sem := semaphore.NewWeighted(maxConcurrency)
 		eg, egCtx := errgroup.WithContext(ctx)
 
-		for i := range pods {
-			pod := pods[i]
+		for i := range servingPods {
+			pod := servingPods[i]
 			eg.Go(func() error {
 				if err := sem.Acquire(egCtx, 1); err != nil {
 					return err
@@ -151,16 +150,16 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	var connectorImage string
-	for i := range pods {
-		if pods[i].Status.Phase == corev1.PodRunning && len(pods[i].Spec.Containers) > 0 {
-			connectorImage = pods[i].Spec.Containers[0].Image
+	for i := range servingPods {
+		if servingPods[i].Status.Phase == corev1.PodRunning && len(servingPods[i].Spec.Containers) > 0 {
+			connectorImage = servingPods[i].Spec.Containers[0].Image
 			break
 		}
 	}
 	if connectorImage == "" {
-		for i := range pods {
-			if pods[i].Status.Phase == corev1.PodPending && len(pods[i].Spec.Containers) > 0 {
-				connectorImage = pods[i].Spec.Containers[0].Image
+		for i := range servingPods {
+			if servingPods[i].Status.Phase == corev1.PodPending && len(servingPods[i].Spec.Containers) > 0 {
+				connectorImage = servingPods[i].Spec.Containers[0].Image
 				break
 			}
 		}
@@ -205,6 +204,17 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func filterServiceableConnectorPods(pods []corev1.Pod) []corev1.Pod {
+	servingPods := make([]corev1.Pod, 0, len(pods))
+	for _, pod := range pods {
+		if pod.Status.Phase != corev1.PodRunning && pod.Status.Phase != corev1.PodPending {
+			continue
+		}
+		servingPods = append(servingPods, pod)
+	}
+	return servingPods
 }
 
 func (r *GameServiceReconciler) setCondition(gs *zzrrv1alpha1.GameService, condType string, status metav1.ConditionStatus, reason, message string) {
