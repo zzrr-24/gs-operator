@@ -26,10 +26,12 @@ go.work
 *.swo
 *~
 
+.docs/
+
 # Kubeconfig might contain secrets
 *.kubeconfig
 
-# AI-related files
+
 AGENTS.md
 
 .openopencode/
