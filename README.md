@@ -1,6 +1,6 @@
 # gs-operator
 
-游戏服 Kubernetes Operator — 自动管理 Connector Pod 的 Service 和 Ingress，支持蓝绿发布。
+游戏服 Kubernetes Operator — 自动管理 Connector Pod 的 Service 和 Ingress/HTTPRoute，支持蓝绿发布。
 
 ## 概述
 
@@ -9,13 +9,14 @@ gs-operator 是一个基于 Kubebuilder 的 Kubernetes Operator，用于管理�
 ### 解决的问题
 
 - **去 Nginx Gateway**：通过 Ingress Path 直连 Connector Pod，减少网络跳转
-- **动态 Ingress 管理**：Connector Pod 扩缩容时自动增删 Service 和 Ingress Path
-- **蓝绿发布**：通过两个 GameService CR 管理两套游戏服环境，手动切换 Ingress 流量
+- **动态入口管理**：Connector Pod 扩缩容时自动增删 Service 和 Ingress Path 或 HTTPRoute Rule
+- **Gateway API 兼容**：旧集群默认继续使用 Ingress，新云上环境可显式切换到 Gateway API HTTPRoute
+- **蓝绿发布**：通过两个 GameService CR 管理两套游戏服环境，手动切换入口流量
 
 ### 架构
 
 ```
-Higress (Ingress Controller)
+Higress (Ingress Controller) or Gateway API Gateway
     │
     ├── /connector0  →  Service: connector-0-svc  →  Pod: connector-0
     ├── /connector1  →  Service: connector-1-svc  →  Pod: connector-1
@@ -27,7 +28,7 @@ Higress (Ingress Controller)
 
 | 组件 | 职责 |
 |------|------|
-| **Operator** | 管理 Connector Pod 的 Service、Ingress Path、蓝绿切换 |
+| **Operator** | 管理 Connector Pod 的 Service、Ingress/HTTPRoute、蓝绿切换 |
 | **ArgoCD / 用户** | 部署游戏服本体（Deployment/StatefulSet/ConfigMap/Namespace）、清理旧版本 |
 | **用户（手动）** | 触发蓝绿切换（patch `active` 字段）、回滚、提前清理保留版本 |
 
@@ -35,7 +36,8 @@ Higress (Ingress Controller)
 
 - Go 1.25+
 - Kubernetes 1.31+
-- Ingress Controller（支持标准 K8s Ingress，如 Higress、nginx-ingress 等）
+- Ingress Controller（Ingress 模式，支持标准 K8s Ingress，如 Higress、nginx-ingress 等）
+- Gateway API CRD 和 Gateway controller（Gateway 模式）；`Gateway/GatewayClass` 由平台预先创建
 - kubectl 配置了目标集群
 
 ## 快速开始
@@ -121,6 +123,13 @@ kubectl get svc -n adventure-blue -l app.kubernetes.io/managed-by=gs-operator
 kubectl get ingress -n adventure-blue
 ```
 
+Gateway 模式下使用 `config/samples/zzrr_v1alpha1_gameservice_gateway.yaml`，Operator 会创建 `HTTPRoute`，不会创建 `Gateway`：
+
+```bash
+kubectl apply -f config/samples/zzrr_v1alpha1_gameservice_gateway.yaml
+kubectl get httproute -n adventure
+```
+
 ### 5. 测试访问
 
 ```bash
@@ -158,10 +167,12 @@ metadata:
   name: <blue|green>
   namespace: default
 spec:
-  # --- Ingress 配置 ---
+  trafficMode: string              # "Ingress" 或 "Gateway"，默认"Ingress"
+
+  # --- 入口通用配置；Ingress 模式下还用于生成 Ingress ---
   ingress:
-    host: string                    # Ingress host，必填
-    ingressClassName: string        # Ingress Class，如"higress"
+    host: string                    # 入口 host，必填
+    ingressClassName: string        # Ingress 模式必填，如"higress"
     pathType: string                # 默认"Prefix"
     pathPrefix: string              # path 前缀，默认"/connector"
     port: int32                     # 后端 Service 端口
@@ -169,6 +180,13 @@ spec:
       secretName: string            # TLS 证书 Secret（可选）
     annotations:                    # Ingress 注解（可选）
       key: value                    # 如 higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
+
+  # --- Gateway API 配置；trafficMode=Gateway 时必填 ---
+  gateway:
+    parentRef:
+      name: string                  # Gateway 名称
+      namespace: string             # Gateway namespace（可选）
+      sectionName: string           # Gateway listener 名称（可选）
 
   # --- Connector 所在命名空间 ---
   connectorNamespace: string
@@ -200,12 +218,16 @@ status:
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `ingress.host` | ✅ | Ingress 域名 |
-| `ingress.ingressClassName` | ✅ | Ingress Controller 名称 |
+| `trafficMode` | ❌ | 默认 `Ingress`；设置为 `Gateway` 时生成 HTTPRoute |
+| `ingress.host` | ✅ | 入口域名 |
+| `ingress.ingressClassName` | Ingress 模式 ✅ | Ingress Controller 名称 |
 | `ingress.pathPrefix` | ❌ | 默认 `/connector`，最终 path 为 `<pathPrefix><ordinal>` |
 | `ingress.port` | ❌ | 默认 3010 |
-| `ingress.annotations` | ❌ | 透传到 Ingress 资源，k-v 格式 |
-| `ingress.tls.secretName` | ❌ | 配置 TLS 证书 |
+| `ingress.annotations` | ❌ | 仅 Ingress 模式透传到 Ingress 资源 |
+| `ingress.tls.secretName` | ❌ | 仅 Ingress 模式配置 TLS 证书 |
+| `gateway.parentRef.name` | Gateway 模式 ✅ | 平台预先创建的 Gateway 名称 |
+| `gateway.parentRef.namespace` | ❌ | Gateway namespace，不填表示 HTTPRoute 本 namespace |
+| `gateway.parentRef.sectionName` | ❌ | Gateway listener 名称 |
 | `connectorNamespace` | ✅ | Connector pod 所在的命名空间 |
 | `deployGroup.role` | ✅ | 标识环境角色 |
 | `deployGroup.active` | ✅ | 是否接收流量 |

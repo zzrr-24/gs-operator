@@ -10,9 +10,8 @@ type IngressConfig struct {
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
 	Host string `json:"host"`
 
-	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
-	IngressClassName string `json:"ingressClassName"`
+	IngressClassName string `json:"ingressClassName,omitempty"`
 
 	// +kubebuilder:validation:Enum=Prefix;Exact;ImplementationSpecific
 	PathType string `json:"pathType"`
@@ -27,6 +26,31 @@ type IngressConfig struct {
 
 	TLS         *TLSConfig        `json:"tls,omitempty"`
 	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// +kubebuilder:validation:Enum=Ingress;Gateway
+type TrafficMode string
+
+const (
+	TrafficModeIngress TrafficMode = "Ingress"
+	TrafficModeGateway TrafficMode = "Gateway"
+)
+
+type GatewayConfig struct {
+	// +kubebuilder:validation:Required
+	ParentRef GatewayParentRef `json:"parentRef"`
+}
+
+type GatewayParentRef struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// +kubebuilder:validation:MinLength=1
+	Namespace string `json:"namespace,omitempty"`
+
+	// +kubebuilder:validation:MinLength=1
+	SectionName string `json:"sectionName,omitempty"`
 }
 
 type TLSConfig struct {
@@ -50,9 +74,16 @@ type RetentionConfig struct {
 	DefaultDuration string `json:"defaultDuration"`
 }
 
+// +kubebuilder:validation:XValidation:rule="!has(self.trafficMode) || self.trafficMode != 'Ingress' || has(self.ingress.ingressClassName)",message="ingress.ingressClassName is required when trafficMode is Ingress"
+// +kubebuilder:validation:XValidation:rule="!has(self.trafficMode) || self.trafficMode != 'Gateway' || has(self.gateway)",message="gateway is required when trafficMode is Gateway"
 type GameServiceSpec struct {
+	// +kubebuilder:default=Ingress
+	TrafficMode TrafficMode `json:"trafficMode,omitempty"`
+
 	// +kubebuilder:validation:Required
 	Ingress IngressConfig `json:"ingress"`
+
+	Gateway *GatewayConfig `json:"gateway,omitempty"`
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1

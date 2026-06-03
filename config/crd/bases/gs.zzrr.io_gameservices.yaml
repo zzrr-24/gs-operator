@@ -66,6 +66,25 @@ spec:
                 - active
                 - role
                 type: object
+              gateway:
+                properties:
+                  parentRef:
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                      namespace:
+                        minLength: 1
+                        type: string
+                      sectionName:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - parentRef
+                type: object
               ingress:
                 properties:
                   annotations:
@@ -103,7 +122,6 @@ spec:
                     type: object
                 required:
                 - host
-                - ingressClassName
                 - pathPrefix
                 - pathType
                 - port
@@ -125,6 +143,12 @@ spec:
                 - defaultDuration
                 - enabled
                 type: object
+              trafficMode:
+                default: Ingress
+                enum:
+                - Ingress
+                - Gateway
+                type: string
             required:
             - connectorNamespace
             - deployGroup
@@ -132,6 +156,13 @@ spec:
             - podLabelKey
             - podLabelValue
             type: object
+            x-kubernetes-validations:
+            - message: ingress.ingressClassName is required when trafficMode is Ingress
+              rule: '!has(self.trafficMode) || self.trafficMode != ''Ingress'' ||
+                has(self.ingress.ingressClassName)'
+            - message: gateway is required when trafficMode is Gateway
+              rule: '!has(self.trafficMode) || self.trafficMode != ''Gateway'' ||
+                has(self.gateway)'
           status:
             properties:
               conditions:

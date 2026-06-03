@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -118,6 +119,9 @@ func (m *IngressManager) ReconcileIngress(ctx context.Context, gs *zzrrv1alpha1.
 
 	var existingIngress networkingv1.Ingress
 	if err := m.Get(ctx, client.ObjectKey{Name: ingressName, Namespace: gs.Spec.ConnectorNamespace}, &existingIngress); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to get ingress: %w", err)
+		}
 		if err := m.Create(ctx, desiredIngress); err != nil {
 			return fmt.Errorf("failed to create ingress: %w", err)
 		}

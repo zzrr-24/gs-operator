@@ -1,0 +1,28 @@
+apiVersion: gs.zzrr.io/v1alpha1
+kind: GameService
+metadata:
+  labels:
+    app.kubernetes.io/name: gs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: blue-gateway
+spec:
+  trafficMode: Gateway
+  ingress:
+    host: game.example.com
+    pathType: Prefix
+    pathPrefix: "/connector"
+    port: 3010
+  gateway:
+    parentRef:
+      name: shared-gateway
+      namespace: gateway-system
+      sectionName: http
+  connectorNamespace: adventure
+  podLabelKey: app
+  podLabelValue: connector
+  deployGroup:
+    role: blue
+    active: true
+  retention:
+    enabled: true
+    defaultDuration: 24h

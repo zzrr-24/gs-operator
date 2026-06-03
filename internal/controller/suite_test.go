@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"go/build"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	zzrrv1alpha1 "gs-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -62,12 +64,17 @@ var _ = BeforeSuite(func() {
 	var err error
 	err = zzrrv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
+	err = gatewayv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "config", "crd", "bases"),
+			gatewayAPICRDPath(),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -115,4 +122,16 @@ func getFirstFoundEnvTestBinaryDir() string {
 		}
 	}
 	return ""
+}
+
+func gatewayAPICRDPath() string {
+	modCache := os.Getenv("GOMODCACHE")
+	if modCache == "" {
+		gopath := os.Getenv("GOPATH")
+		if gopath == "" {
+			gopath = build.Default.GOPATH
+		}
+		modCache = filepath.Join(gopath, "pkg", "mod")
+	}
+	return filepath.Join(modCache, "sigs.k8s.io", "gateway-api@v1.5.1", "config", "crd", "standard")
 }

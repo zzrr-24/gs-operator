@@ -30,6 +30,7 @@ import (
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 const gameServiceFinalizer = "gs.zzrr.io/finalizer"
@@ -68,6 +69,7 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	svcMgr := NewConnectorServiceManager(r.Client, r.Scheme)
 	ingMgr := NewIngressManager(r.Client, r.Scheme)
+	routeMgr := NewHTTPRouteManager(r.Client, r.Scheme)
 
 	pods, err := svcMgr.ListConnectorPods(ctx,
 		gs.Spec.ConnectorNamespace,
@@ -128,15 +130,42 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if gs.Spec.DeployGroup.Active {
-		if err := ingMgr.ReconcileIngress(ctx, &gs, ordinals); err != nil {
-			log.Error(err, "Failed to reconcile ingress")
-			r.Recorder.Event(&gs, corev1.EventTypeWarning, "IngressReconcileFailed", err.Error())
-			r.setCondition(&gs, "Available", metav1.ConditionFalse, "IngressReconcileFailed", err.Error())
-			_ = r.Status().Update(ctx, &gs)
-			return ctrl.Result{}, err
+		switch effectiveTrafficMode(&gs) {
+		case zzrrv1alpha1.TrafficModeGateway:
+			if err := ingMgr.DeleteIngress(ctx, &gs); err != nil {
+				log.Error(err, "Failed to delete stale ingress for gateway mode")
+				r.Recorder.Event(&gs, corev1.EventTypeWarning, "StaleIngressDeleteFailed", err.Error())
+				r.setCondition(&gs, "Available", metav1.ConditionFalse, "StaleIngressDeleteFailed", err.Error())
+				_ = r.Status().Update(ctx, &gs)
+				return ctrl.Result{}, err
+			}
+			if err := routeMgr.ReconcileHTTPRoute(ctx, &gs, ordinals); err != nil {
+				log.Error(err, "Failed to reconcile HTTPRoute")
+				r.Recorder.Event(&gs, corev1.EventTypeWarning, "HTTPRouteReconcileFailed", err.Error())
+				r.setCondition(&gs, "Available", metav1.ConditionFalse, "HTTPRouteReconcileFailed", err.Error())
+				_ = r.Status().Update(ctx, &gs)
+				return ctrl.Result{}, err
+			}
+			r.setCondition(&gs, "Available", metav1.ConditionTrue, "AllHTTPRoutePathsReady",
+				fmt.Sprintf("HTTPRoute paths synced for %d connector pods", len(ordinals)))
+		default:
+			if err := routeMgr.DeleteHTTPRoute(ctx, &gs); err != nil {
+				log.Error(err, "Failed to delete stale HTTPRoute for ingress mode")
+				r.Recorder.Event(&gs, corev1.EventTypeWarning, "StaleHTTPRouteDeleteFailed", err.Error())
+				r.setCondition(&gs, "Available", metav1.ConditionFalse, "StaleHTTPRouteDeleteFailed", err.Error())
+				_ = r.Status().Update(ctx, &gs)
+				return ctrl.Result{}, err
+			}
+			if err := ingMgr.ReconcileIngress(ctx, &gs, ordinals); err != nil {
+				log.Error(err, "Failed to reconcile ingress")
+				r.Recorder.Event(&gs, corev1.EventTypeWarning, "IngressReconcileFailed", err.Error())
+				r.setCondition(&gs, "Available", metav1.ConditionFalse, "IngressReconcileFailed", err.Error())
+				_ = r.Status().Update(ctx, &gs)
+				return ctrl.Result{}, err
+			}
+			r.setCondition(&gs, "Available", metav1.ConditionTrue, "AllIngressPathsReady",
+				fmt.Sprintf("Ingress paths synced for %d connector pods", len(ordinals)))
 		}
-		r.setCondition(&gs, "Available", metav1.ConditionTrue, "AllIngressPathsReady",
-			fmt.Sprintf("Ingress paths synced for %d connector pods", len(ordinals)))
 		r.setCondition(&gs, "TrafficActive", metav1.ConditionTrue, "Active", "This deployment group is receiving traffic")
 	} else {
 		if err := ingMgr.DeleteIngress(ctx, &gs); err != nil {
@@ -144,8 +173,13 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			r.Recorder.Event(&gs, corev1.EventTypeWarning, "IngressDeleteFailed", err.Error())
 			r.setCondition(&gs, "Available", metav1.ConditionFalse, "IngressDeleteFailed", err.Error())
 		}
+		if err := routeMgr.DeleteHTTPRoute(ctx, &gs); err != nil {
+			log.Error(err, "Failed to delete HTTPRoute for standby group")
+			r.Recorder.Event(&gs, corev1.EventTypeWarning, "HTTPRouteDeleteFailed", err.Error())
+			r.setCondition(&gs, "Available", metav1.ConditionFalse, "HTTPRouteDeleteFailed", err.Error())
+		}
 		r.setCondition(&gs, "Available", metav1.ConditionTrue, "Standby",
-			"Standby, no ingress active")
+			"Standby, no traffic entry active")
 		r.setCondition(&gs, "TrafficActive", metav1.ConditionFalse, "Standby", "This deployment group is not receiving traffic")
 	}
 
@@ -263,6 +297,11 @@ func (r *GameServiceReconciler) finalize(ctx context.Context, gs *zzrrv1alpha1.G
 		log.Error(err, "Failed to delete ingress during finalization")
 		return ctrl.Result{}, err
 	}
+	routeMgr := NewHTTPRouteManager(r.Client, r.Scheme)
+	if err := routeMgr.DeleteHTTPRoute(ctx, gs); err != nil {
+		log.Error(err, "Failed to delete HTTPRoute during finalization")
+		return ctrl.Result{}, err
+	}
 
 	var svcList corev1.ServiceList
 	if err := r.List(ctx, &svcList,
@@ -288,6 +327,13 @@ func (r *GameServiceReconciler) finalize(ctx context.Context, gs *zzrrv1alpha1.G
 
 	log.Info("Finalization complete")
 	return ctrl.Result{}, nil
+}
+
+func effectiveTrafficMode(gs *zzrrv1alpha1.GameService) zzrrv1alpha1.TrafficMode {
+	if gs.Spec.TrafficMode == "" {
+		return zzrrv1alpha1.TrafficModeIngress
+	}
+	return gs.Spec.TrafficMode
 }
 
 func (r *GameServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
