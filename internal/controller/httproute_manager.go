@@ -48,7 +48,7 @@ func (m *HTTPRouteManager) ReconcileHTTPRoute(ctx context.Context, gs *zzrrv1alp
 	for _, ord := range ordinals {
 		svcName := gatewayv1.ObjectName(fmt.Sprintf("connector-%s-svc", ord))
 		path := fmt.Sprintf("%s%s", gs.Spec.Ingress.PathPrefix, ord)
-		port := gatewayv1.PortNumber(gs.Spec.Ingress.Port)
+		port := gs.Spec.Ingress.Port
 		rules = append(rules, gatewayv1.HTTPRouteRule{
 			Matches: []gatewayv1.HTTPRouteMatch{
 				{
