@@ -71,12 +71,13 @@ metadata:
   name: game-blue
   namespace: default
 spec:
-  ingress:
+  route:
     host: game.example.com
-    ingressClassName: higress
     pathType: Prefix
     pathPrefix: "/connector"
     port: 80
+  ingress:
+    ingressClassName: higress
   connectorNamespace: gsb
   podLabelKey: app
   podLabelValue: connector

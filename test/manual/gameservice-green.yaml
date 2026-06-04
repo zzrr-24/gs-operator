@@ -4,12 +4,13 @@ metadata:
   name: green
   namespace: gsg
 spec:
-  ingress:
+  route:
     host: adventure.zzrr.io
-    ingressClassName: higress
     pathType: Prefix
     pathPrefix: "/game"
     port: 3010
+  ingress:
+    ingressClassName: higress
     annotations:
       higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
       higress.ingress.kubernetes.io/proxy-send-timeout: "300s"

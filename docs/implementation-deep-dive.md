@@ -154,12 +154,13 @@ spec:
   deployGroup:
     role: blue                      # 部署组名称（blue 或 green）
     active: true                    # 是否承载流量
-  ingress:
-    host: game.zzrr.io              # Ingress 域名
-    ingressClassName: higress       # Ingress Controller 类型
+  route:
+    host: game.zzrr.io              # 通用入口域名
     pathType: Prefix
     pathPrefix: /connector          # 路径前缀
     port: 80
+  ingress:
+    ingressClassName: higress       # Ingress Controller 类型
   retention:                        # 保留策略（可选）
     enabled: true
     defaultDuration: 24h            # 不活跃后 24 小时自动删除
@@ -174,11 +175,11 @@ spec:
 | `connectorNamespace` | string | connector Pod 所在的 namespace |
 | `deployGroup.role` | enum(blue/green) | 蓝绿部署组标识 |
 | `deployGroup.active` | bool | true=承载流量，false=备用 |
-| `ingress.host` | string | Ingress 的域名 |
+| `route.host` | string | Ingress/HTTPRoute 共用的域名 |
+| `route.pathType` | enum | 路径匹配类型（Prefix/Exact） |
+| `route.pathPrefix` | string | 每个 connector 的 URL 前缀 |
+| `route.port` | int32 | connector Pod 的服务端口 |
 | `ingress.ingressClassName` | string | 使用的 Ingress Controller（如 nginx、higress） |
-| `ingress.pathType` | enum | 路径匹配类型（Prefix/Exact） |
-| `ingress.pathPrefix` | string | 每个 connector 的 URL 前缀 |
-| `ingress.port` | int32 | connector Pod 的服务端口 |
 | `retention.enabled` | bool | 是否启用自动过期 |
 | `retention.defaultDuration` | string | 过期时长，如 "24h" |
 

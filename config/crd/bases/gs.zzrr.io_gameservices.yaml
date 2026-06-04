@@ -91,27 +91,9 @@ spec:
                     additionalProperties:
                       type: string
                     type: object
-                  host:
-                    minLength: 1
-                    pattern: ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$
-                    type: string
                   ingressClassName:
                     minLength: 1
                     type: string
-                  pathPrefix:
-                    minLength: 1
-                    type: string
-                  pathType:
-                    enum:
-                    - Prefix
-                    - Exact
-                    - ImplementationSpecific
-                    type: string
-                  port:
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
                   tls:
                     properties:
                       secretName:
@@ -121,10 +103,7 @@ spec:
                     - secretName
                     type: object
                 required:
-                - host
-                - pathPrefix
-                - pathType
-                - port
+                - ingressClassName
                 type: object
               podLabelKey:
                 minLength: 1
@@ -143,6 +122,32 @@ spec:
                 - defaultDuration
                 - enabled
                 type: object
+              route:
+                properties:
+                  host:
+                    minLength: 1
+                    pattern: ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$
+                    type: string
+                  pathPrefix:
+                    minLength: 1
+                    type: string
+                  pathType:
+                    enum:
+                    - Prefix
+                    - Exact
+                    - ImplementationSpecific
+                    type: string
+                  port:
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                required:
+                - host
+                - pathPrefix
+                - pathType
+                - port
+                type: object
               trafficMode:
                 default: Ingress
                 enum:
@@ -152,14 +157,13 @@ spec:
             required:
             - connectorNamespace
             - deployGroup
-            - ingress
             - podLabelKey
             - podLabelValue
+            - route
             type: object
             x-kubernetes-validations:
-            - message: ingress.ingressClassName is required when trafficMode is Ingress
-              rule: '!has(self.trafficMode) || self.trafficMode != ''Ingress'' ||
-                has(self.ingress.ingressClassName)'
+            - message: ingress is required when trafficMode is Ingress
+              rule: has(self.trafficMode) && self.trafficMode == 'Gateway' || has(self.ingress)
             - message: gateway is required when trafficMode is Gateway
               rule: '!has(self.trafficMode) || self.trafficMode != ''Gateway'' ||
                 has(self.gateway)'

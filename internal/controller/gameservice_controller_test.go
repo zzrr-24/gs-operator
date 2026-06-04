@@ -9,10 +9,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -68,12 +72,14 @@ var _ = Describe("GameService Controller", func() {
 				Namespace: typeNamespacedName.Namespace,
 			},
 			Spec: zzrrv1alpha1.GameServiceSpec{
-				Ingress: zzrrv1alpha1.IngressConfig{
-					Host:             "test.example.com",
+				Route: zzrrv1alpha1.RouteConfig{
+					Host:       "test.example.com",
+					PathType:   "Prefix",
+					PathPrefix: "/connector",
+					Port:       80,
+				},
+				Ingress: &zzrrv1alpha1.IngressConfig{
 					IngressClassName: "nginx",
-					PathType:         "Prefix",
-					PathPrefix:       "/connector",
-					Port:             80,
 				},
 				PodLabelKey:        "app",
 				PodLabelValue:      "connector",
@@ -91,10 +97,7 @@ var _ = Describe("GameService Controller", func() {
 	createGatewayGS := func(active bool) *zzrrv1alpha1.GameService {
 		gs := createGS(active)
 		gs.Spec.TrafficMode = zzrrv1alpha1.TrafficModeGateway
-		gs.Spec.Ingress.IngressClassName = ""
-		gs.Spec.Ingress.Annotations = map[string]string{
-			"higress.ingress.kubernetes.io/proxy-read-timeout": "300s",
-		}
+		gs.Spec.Ingress = nil
 		gs.Spec.Gateway = &zzrrv1alpha1.GatewayConfig{
 			ParentRef: zzrrv1alpha1.GatewayParentRef{
 				Name:        "shared-gateway",
@@ -224,6 +227,41 @@ var _ = Describe("GameService Controller", func() {
 		})
 	})
 
+	Context("When Gateway API CRDs are not installed", func() {
+		It("should ignore HTTPRoute cleanup for Ingress compatibility", func() {
+			interceptedClient := fake.NewClientBuilder().
+				WithScheme(k8sClient.Scheme()).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(
+						context.Context,
+						client.WithWatch,
+						client.ObjectKey,
+						client.Object,
+						...client.GetOption,
+					) error {
+						return &apimeta.NoKindMatchError{
+							GroupKind: schema.GroupKind{
+								Group: gatewayv1.GroupVersion.Group,
+								Kind:  "HTTPRoute",
+							},
+							SearchedVersions: []string{gatewayv1.GroupVersion.Version},
+						}
+					},
+				}).
+				Build()
+			mgr := NewHTTPRouteManager(interceptedClient, k8sClient.Scheme())
+
+			Expect(mgr.DeleteHTTPRoute(ctx, &zzrrv1alpha1.GameService{
+				Spec: zzrrv1alpha1.GameServiceSpec{
+					ConnectorNamespace: testNs,
+					DeployGroup: zzrrv1alpha1.DeployGroupConfig{
+						Role: "blue",
+					},
+				},
+			})).To(Succeed())
+		})
+	})
+
 	Context("When switching from active to inactive", func() {
 		It("should set TrafficActive=False", func() {
 			gs := createGS(true)
@@ -257,6 +295,23 @@ var _ = Describe("GameService Controller", func() {
 			mgr := &IngressManager{}
 			result := mgr.BuildConnectorOrdinals([]string{"pod-3", "pod-1", "pod-2", "pod-1"})
 			Expect(result).To(Equal([]string{"1", "2", "3"}))
+		})
+	})
+
+	Context("ValidateRouteConfig", func() {
+		It("should reject legacy objects without spec.route", func() {
+			Expect(validateRouteConfig(zzrrv1alpha1.RouteConfig{})).To(MatchError(
+				"spec.route is incomplete, migrate host, pathType, pathPrefix, and port from spec.ingress",
+			))
+		})
+
+		It("should accept complete route config", func() {
+			Expect(validateRouteConfig(zzrrv1alpha1.RouteConfig{
+				Host:       "test.example.com",
+				PathType:   "Prefix",
+				PathPrefix: "/connector",
+				Port:       80,
+			})).To(Succeed())
 		})
 	})
 })

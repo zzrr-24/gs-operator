@@ -74,18 +74,67 @@ spec:
                 - active
                 - role
                 type: object
+              gateway:
+                properties:
+                  parentRef:
+                    properties:
+                      name:
+                        minLength: 1
+                        type: string
+                      namespace:
+                        minLength: 1
+                        type: string
+                      sectionName:
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - parentRef
+                type: object
               ingress:
                 properties:
                   annotations:
                     additionalProperties:
                       type: string
                     type: object
+                  ingressClassName:
+                    minLength: 1
+                    type: string
+                  tls:
+                    properties:
+                      secretName:
+                        minLength: 1
+                        type: string
+                    required:
+                    - secretName
+                    type: object
+                required:
+                - ingressClassName
+                type: object
+              podLabelKey:
+                minLength: 1
+                type: string
+              podLabelValue:
+                minLength: 1
+                type: string
+              retention:
+                properties:
+                  defaultDuration:
+                    pattern: ^[1-9][0-9]*h$
+                    type: string
+                  enabled:
+                    type: boolean
+                required:
+                - defaultDuration
+                - enabled
+                type: object
+              route:
+                properties:
                   host:
                     minLength: 1
                     pattern: ^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$
-                    type: string
-                  ingressClassName:
-                    minLength: 1
                     type: string
                   pathPrefix:
                     minLength: 1
@@ -101,37 +150,31 @@ spec:
                     maximum: 65535
                     minimum: 1
                     type: integer
-                  tls:
-                    properties:
-                      secretName:
-                        minLength: 1
-                        type: string
-                    required:
-                    - secretName
-                    type: object
                 required:
                 - host
-                - ingressClassName
                 - pathPrefix
                 - pathType
                 - port
                 type: object
-              retention:
-                properties:
-                  defaultDuration:
-                    pattern: ^[1-9][0-9]*h$
-                    type: string
-                  enabled:
-                    type: boolean
-                required:
-                - defaultDuration
-                - enabled
-                type: object
+              trafficMode:
+                default: Ingress
+                enum:
+                - Ingress
+                - Gateway
+                type: string
             required:
             - connectorNamespace
             - deployGroup
-            - ingress
+            - podLabelKey
+            - podLabelValue
+            - route
             type: object
+            x-kubernetes-validations:
+            - message: ingress is required when trafficMode is Ingress
+              rule: has(self.trafficMode) && self.trafficMode == 'Gateway' || has(self.ingress)
+            - message: gateway is required when trafficMode is Gateway
+              rule: '!has(self.trafficMode) || self.trafficMode != ''Gateway'' ||
+                has(self.gateway)'
           status:
             properties:
               conditions:
@@ -361,6 +404,18 @@ rules:
   - create
   - patch
 - apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - gs.zzrr.io
   resources:
   - gameservices
@@ -522,6 +577,9 @@ spec:
         - --health-probe-bind-address=:8081
         command:
         - /manager
+        env:
+        - name: TZ
+          value: Asia/Shanghai
         image: registry.cn-hangzhou.aliyuncs.com/zzrr_images/gs-operator:v1
         livenessProbe:
           httpGet:

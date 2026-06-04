@@ -67,6 +67,12 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
+	if err := validateRouteConfig(gs.Spec.Route); err != nil {
+		log.Error(err, "Invalid route config")
+		r.Recorder.Event(&gs, corev1.EventTypeWarning, "InvalidRouteConfig", err.Error())
+		return ctrl.Result{}, err
+	}
+
 	svcMgr := NewConnectorServiceManager(r.Client, r.Scheme)
 	ingMgr := NewIngressManager(r.Client, r.Scheme)
 	routeMgr := NewHTTPRouteManager(r.Client, r.Scheme)
@@ -107,7 +113,7 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 					return err
 				}
 				defer sem.Release(1)
-				if _, err := svcMgr.EnsureService(egCtx, &pod, gs.Spec.Ingress.Port); err != nil {
+				if _, err := svcMgr.EnsureService(egCtx, &pod, gs.Spec.Route.Port); err != nil {
 					log.Error(err, "Failed to ensure service for pod", "pod", pod.Name)
 					r.Recorder.Event(&gs, corev1.EventTypeWarning, "ServiceCreateFailed", err.Error())
 					return err
@@ -238,6 +244,13 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func validateRouteConfig(route zzrrv1alpha1.RouteConfig) error {
+	if route.Host == "" || route.PathType == "" || route.PathPrefix == "" || route.Port <= 0 {
+		return fmt.Errorf("spec.route is incomplete, migrate host, pathType, pathPrefix, and port from spec.ingress")
+	}
+	return nil
 }
 
 func filterServiceableConnectorPods(pods []corev1.Pod) []corev1.Pod {

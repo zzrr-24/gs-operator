@@ -4,14 +4,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-type IngressConfig struct {
+type RouteConfig struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$`
 	Host string `json:"host"`
-
-	// +kubebuilder:validation:MinLength=1
-	IngressClassName string `json:"ingressClassName,omitempty"`
 
 	// +kubebuilder:validation:Enum=Prefix;Exact;ImplementationSpecific
 	PathType string `json:"pathType"`
@@ -23,6 +20,12 @@ type IngressConfig struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
+}
+
+type IngressConfig struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	IngressClassName string `json:"ingressClassName"`
 
 	TLS         *TLSConfig        `json:"tls,omitempty"`
 	Annotations map[string]string `json:"annotations,omitempty"`
@@ -74,15 +77,16 @@ type RetentionConfig struct {
 	DefaultDuration string `json:"defaultDuration"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.trafficMode) || self.trafficMode != 'Ingress' || has(self.ingress.ingressClassName)",message="ingress.ingressClassName is required when trafficMode is Ingress"
+// +kubebuilder:validation:XValidation:rule="has(self.trafficMode) && self.trafficMode == 'Gateway' || has(self.ingress)",message="ingress is required when trafficMode is Ingress"
 // +kubebuilder:validation:XValidation:rule="!has(self.trafficMode) || self.trafficMode != 'Gateway' || has(self.gateway)",message="gateway is required when trafficMode is Gateway"
 type GameServiceSpec struct {
 	// +kubebuilder:default=Ingress
 	TrafficMode TrafficMode `json:"trafficMode,omitempty"`
 
 	// +kubebuilder:validation:Required
-	Ingress IngressConfig `json:"ingress"`
+	Route RouteConfig `json:"route"`
 
+	Ingress *IngressConfig `json:"ingress,omitempty"`
 	Gateway *GatewayConfig `json:"gateway,omitempty"`
 
 	// +kubebuilder:validation:Required

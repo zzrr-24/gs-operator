@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,12 +29,12 @@ func NewHTTPRouteManager(c client.Client, s *runtime.Scheme) *HTTPRouteManager {
 
 func (m *HTTPRouteManager) ReconcileHTTPRoute(ctx context.Context, gs *zzrrv1alpha1.GameService, ordinals []string) error {
 	log := log.FromContext(ctx)
+	if gs.Spec.Gateway == nil {
+		return fmt.Errorf("gateway config is required when trafficMode is Gateway")
+	}
 	if len(ordinals) == 0 {
 		log.Info("No connector pods, skipping HTTPRoute reconcile")
 		return nil
-	}
-	if gs.Spec.Gateway == nil {
-		return fmt.Errorf("gateway config is required when trafficMode is Gateway")
 	}
 
 	httpRouteName := fmt.Sprintf("game-route-%s", gs.Spec.DeployGroup.Role)
@@ -41,14 +42,14 @@ func (m *HTTPRouteManager) ReconcileHTTPRoute(ctx context.Context, gs *zzrrv1alp
 	sort.Strings(ordinals)
 
 	pathType := gatewayv1.PathMatchPathPrefix
-	if gs.Spec.Ingress.PathType == "Exact" {
+	if gs.Spec.Route.PathType == "Exact" {
 		pathType = gatewayv1.PathMatchExact
 	}
 
 	for _, ord := range ordinals {
 		svcName := gatewayv1.ObjectName(fmt.Sprintf("connector-%s-svc", ord))
-		path := fmt.Sprintf("%s%s", gs.Spec.Ingress.PathPrefix, ord)
-		port := gs.Spec.Ingress.Port
+		path := fmt.Sprintf("%s%s", gs.Spec.Route.PathPrefix, ord)
+		port := gs.Spec.Route.Port
 		rules = append(rules, gatewayv1.HTTPRouteRule{
 			Matches: []gatewayv1.HTTPRouteMatch{
 				{
@@ -96,7 +97,7 @@ func (m *HTTPRouteManager) ReconcileHTTPRoute(ctx context.Context, gs *zzrrv1alp
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
 				ParentRefs: []gatewayv1.ParentReference{parentRef},
 			},
-			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(gs.Spec.Ingress.Host)},
+			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(gs.Spec.Route.Host)},
 			Rules:     rules,
 		},
 	}
@@ -141,6 +142,9 @@ func (m *HTTPRouteManager) DeleteHTTPRoute(ctx context.Context, gs *zzrrv1alpha1
 	routeName := fmt.Sprintf("game-route-%s", gs.Spec.DeployGroup.Role)
 	var route gatewayv1.HTTPRoute
 	if err := m.Get(ctx, client.ObjectKey{Name: routeName, Namespace: gs.Spec.ConnectorNamespace}, &route); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			return nil
+		}
 		return client.IgnoreNotFound(err)
 	}
 	return m.Delete(ctx, &route)

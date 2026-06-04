@@ -6,12 +6,13 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: blue
 spec:
-  ingress:
+  route:
     host: game.example.com
-    ingressClassName: higress
     pathType: Prefix
     pathPrefix: "/connector"
     port: 3010
+  ingress:
+    ingressClassName: higress
     annotations:
       higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
       higress.ingress.kubernetes.io/proxy-send-timeout: "300s"

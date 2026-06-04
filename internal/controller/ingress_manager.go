@@ -44,6 +44,9 @@ func (m *IngressManager) BuildConnectorOrdinals(podNames []string) []string {
 
 func (m *IngressManager) ReconcileIngress(ctx context.Context, gs *zzrrv1alpha1.GameService, ordinals []string) error {
 	log := log.FromContext(ctx)
+	if gs.Spec.Ingress == nil {
+		return fmt.Errorf("ingress config is required when trafficMode is Ingress")
+	}
 	if len(ordinals) == 0 {
 		log.Info("No connector pods, skipping ingress reconcile")
 		return nil
@@ -54,20 +57,20 @@ func (m *IngressManager) ReconcileIngress(ctx context.Context, gs *zzrrv1alpha1.
 	sort.Strings(ordinals)
 
 	pathType := networkingv1.PathTypePrefix
-	if gs.Spec.Ingress.PathType != "" {
-		pathType = networkingv1.PathType(gs.Spec.Ingress.PathType)
+	if gs.Spec.Route.PathType != "" {
+		pathType = networkingv1.PathType(gs.Spec.Route.PathType)
 	}
 
 	for _, ord := range ordinals {
 		svcName := fmt.Sprintf("connector-%s-svc", ord)
 		paths = append(paths, networkingv1.HTTPIngressPath{
-			Path:     fmt.Sprintf("%s%s", gs.Spec.Ingress.PathPrefix, ord),
+			Path:     fmt.Sprintf("%s%s", gs.Spec.Route.PathPrefix, ord),
 			PathType: &pathType,
 			Backend: networkingv1.IngressBackend{
 				Service: &networkingv1.IngressServiceBackend{
 					Name: svcName,
 					Port: networkingv1.ServiceBackendPort{
-						Number: gs.Spec.Ingress.Port,
+						Number: gs.Spec.Route.Port,
 					},
 				},
 			},
@@ -88,7 +91,7 @@ func (m *IngressManager) ReconcileIngress(ctx context.Context, gs *zzrrv1alpha1.
 			IngressClassName: &gs.Spec.Ingress.IngressClassName,
 			Rules: []networkingv1.IngressRule{
 				{
-					Host: gs.Spec.Ingress.Host,
+					Host: gs.Spec.Route.Host,
 					IngressRuleValue: networkingv1.IngressRuleValue{
 						HTTP: &networkingv1.HTTPIngressRuleValue{
 							Paths: paths,
@@ -102,7 +105,7 @@ func (m *IngressManager) ReconcileIngress(ctx context.Context, gs *zzrrv1alpha1.
 	if gs.Spec.Ingress.TLS != nil {
 		desiredIngress.Spec.TLS = []networkingv1.IngressTLS{
 			{
-				Hosts:      []string{gs.Spec.Ingress.Host},
+				Hosts:      []string{gs.Spec.Route.Host},
 				SecretName: gs.Spec.Ingress.TLS.SecretName,
 			},
 		}

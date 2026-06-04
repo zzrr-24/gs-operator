@@ -94,12 +94,13 @@ metadata:
   name: blue
   namespace: default
 spec:
-  ingress:
+  route:
     host: game.example.com
-    ingressClassName: higress
     pathType: Prefix
     pathPrefix: "/connector"
     port: 80
+  ingress:
+    ingressClassName: higress
     annotations:
       higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
       higress.ingress.kubernetes.io/proxy-send-timeout: "300s"
@@ -169,13 +170,16 @@ metadata:
 spec:
   trafficMode: string              # "Ingress" 或 "Gateway"，默认"Ingress"
 
-  # --- 入口通用配置；Ingress 模式下还用于生成 Ingress ---
-  ingress:
+  # --- Ingress 和 Gateway API 共用的路由配置 ---
+  route:
     host: string                    # 入口 host，必填
-    ingressClassName: string        # Ingress 模式必填，如"higress"
     pathType: string                # 默认"Prefix"
     pathPrefix: string              # path 前缀，默认"/connector"
     port: int32                     # 后端 Service 端口
+
+  # --- Ingress 配置；trafficMode=Ingress 时必填 ---
+  ingress:
+    ingressClassName: string        # Ingress Class，如"higress"
     tls:
       secretName: string            # TLS 证书 Secret（可选）
     annotations:                    # Ingress 注解（可选）
@@ -219,10 +223,12 @@ status:
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `trafficMode` | ❌ | 默认 `Ingress`；设置为 `Gateway` 时生成 HTTPRoute |
-| `ingress.host` | ✅ | 入口域名 |
+| `route.host` | ✅ | Ingress 和 HTTPRoute 共用的入口域名 |
+| `route.pathType` | ✅ | 路径匹配类型 |
+| `route.pathPrefix` | ✅ | 最终 path 为 `<pathPrefix><ordinal>` |
+| `route.port` | ✅ | 后端 Service 端口 |
+| `ingress` | Ingress 模式 ✅ | Ingress 专属配置 |
 | `ingress.ingressClassName` | Ingress 模式 ✅ | Ingress Controller 名称 |
-| `ingress.pathPrefix` | ❌ | 默认 `/connector`，最终 path 为 `<pathPrefix><ordinal>` |
-| `ingress.port` | ❌ | 默认 3010 |
 | `ingress.annotations` | ❌ | 仅 Ingress 模式透传到 Ingress 资源 |
 | `ingress.tls.secretName` | ❌ | 仅 Ingress 模式配置 TLS 证书 |
 | `gateway.parentRef.name` | Gateway 模式 ✅ | 平台预先创建的 Gateway 名称 |
@@ -232,6 +238,8 @@ status:
 | `deployGroup.role` | ✅ | 标识环境角色 |
 | `deployGroup.active` | ✅ | 是否接收流量 |
 | `retention` | ❌ | 非活跃时的保留策略 |
+
+> 升级提示：原 `ingress.host/pathType/pathPrefix/port` 已迁移到 `route`，已有 GameService 清单需要同步调整。
 
 ## 蓝绿发布工作流
 
