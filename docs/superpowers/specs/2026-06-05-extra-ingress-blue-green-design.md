@@ -1,37 +1,33 @@
-# Extra Ingress Blue-Green Design
+# 附加 Ingress 蓝绿切换设计
 
-## Background
+## 背景
 
-`GameService` currently switches traffic for the main game service by creating or
-deleting the managed Ingress or HTTPRoute for the active deploy group. A new
-`gamelogin` entry point must switch together with the same blue-green rollout.
+`GameService` 目前会根据部署组的 active 状态，为主游戏服务创建或删除受管的
+Ingress 或 HTTPRoute，从而完成蓝绿流量切换。
 
-The new entry point serves a different backend service set. Each backend has a
-blue and green version, and the Ingress backend Service name must change with
-`spec.deployGroup.role`.
+现在需要新增一个 `gamelogin` 入口。它属于另一套后端服务，但必须跟随同一个
+`GameService` 蓝绿切换一起切换。该后端也有蓝、绿两套代码版本，因此 Ingress
+后端 Service 名称需要根据 `spec.deployGroup.role` 自动生成。
 
-## Goals
+## 目标
 
-- Add an optional `spec.extraIngress` block to `GameService`.
-- Reuse `spec.route.host` as the host for the extra Ingress.
-- Reuse `spec.connectorNamespace` as the namespace for the extra Ingress.
-- Generate each backend Service name as
-  `{serviceBaseName}-{spec.deployGroup.role}`.
-- Reconcile the extra Ingress for both `trafficMode: Ingress` and
-  `trafficMode: Gateway`.
-- Keep existing behavior unchanged when `spec.extraIngress` is not configured.
+- 在 `GameService` 中新增可选字段 `spec.extraIngress`。
+- 附加 Ingress 的 host 固定复用 `spec.route.host`。
+- 附加 Ingress 的 namespace 固定复用 `spec.connectorNamespace`。
+- 每个后端 Service 名称按 `{serviceBaseName}-{spec.deployGroup.role}` 生成。
+- 无论 `trafficMode` 是 `Ingress` 还是 `Gateway`，都 reconcile 附加 Ingress。
+- 未配置 `spec.extraIngress` 时保持现有行为不变。
 
-## Non-Goals
+## 非目标
 
-- Do not add a new CRD.
-- Do not support multiple extra Ingress objects in this change.
-- Do not manage the backend Services for the extra Ingress. They are expected to
-  exist outside this controller.
-- Do not support a separate host for the extra Ingress.
+- 不新增 CRD。
+- 本次只支持一个附加 Ingress，不支持多个附加 Ingress 对象。
+- 不管理附加 Ingress 指向的后端 Service，这些 Service 由外部系统创建。
+- 不支持为附加 Ingress 配置独立 host。
 
-## API Shape
+## API 形态
 
-Add new API types under `api/v1alpha1/gameservice_types.go`:
+在 `api/v1alpha1/gameservice_types.go` 中新增类型：
 
 ```go
 type ExtraIngressConfig struct {
@@ -70,13 +66,13 @@ type ExtraIngressPath struct {
 }
 ```
 
-Add the optional field:
+在 `GameServiceSpec` 中新增可选字段：
 
 ```go
 ExtraIngress *ExtraIngressConfig `json:"extraIngress,omitempty"`
 ```
 
-Example:
+示例配置：
 
 ```yaml
 spec:
@@ -107,61 +103,59 @@ spec:
         port: 9012
 ```
 
-For `deployGroup.role: blue`, the generated backends are:
+当 `deployGroup.role: blue` 时，生成的后端为：
 
 - `/serverlogin` -> `logingame-blue:9020`
 - `/servergovern` -> `servergovern-blue:9015`
 - `/backend` -> `backend-blue:9010`
 - `/statsgm` -> `statsgm-blue:9012`
 
-## Controller Behavior
+## 控制器行为
 
-The existing `IngressManager` will gain extra Ingress methods:
+在现有 `IngressManager` 中新增两个方法：
 
 - `ReconcileExtraIngress(ctx, gs)`
 - `DeleteExtraIngress(ctx, gs)`
 
-When `spec.extraIngress` is absent, both methods are no-ops.
+当 `spec.extraIngress` 为空时，两个方法都直接返回成功，不做任何操作。
 
-When `spec.deployGroup.active` is true:
+当 `spec.deployGroup.active` 为 `true` 时：
 
-1. Reconcile existing main traffic entry as today.
-2. Create or update `Ingress/<spec.connectorNamespace>/<spec.extraIngress.name>`.
-3. Set `spec.ingressClassName` from `spec.extraIngress.ingressClassName`.
-4. Set the only rule host to `spec.route.host`.
-5. Build each path from `spec.extraIngress.paths`.
-6. Set backend Service name to
-   `{path.serviceBaseName}-{spec.deployGroup.role}`.
-7. Copy configured annotations and labels.
-8. Set TLS with `spec.route.host` when `spec.extraIngress.tls` is configured.
+1. 先按现有逻辑 reconcile 主流量入口。
+2. 创建或更新 `Ingress/<spec.connectorNamespace>/<spec.extraIngress.name>`。
+3. 将 Ingress 的 `spec.ingressClassName` 设为
+   `spec.extraIngress.ingressClassName`。
+4. 将唯一规则的 host 设为 `spec.route.host`。
+5. 根据 `spec.extraIngress.paths` 构造 HTTP paths。
+6. 将每个 path 的后端 Service 名设为
+   `{path.serviceBaseName}-{spec.deployGroup.role}`。
+7. 写入固定 labels，并复制用户配置的 annotations。
+8. 如果配置了 `spec.extraIngress.tls`，TLS hosts 使用 `spec.route.host`。
 
-When `spec.deployGroup.active` is false:
+当 `spec.deployGroup.active` 为 `false` 时：
 
-1. Delete the main Ingress or HTTPRoute as today.
-2. Delete the configured extra Ingress only when its `gs-role` label still
-   matches this `GameService` role.
+1. 按现有逻辑删除主 Ingress 或 HTTPRoute。
+2. 仅当现有附加 Ingress 的 `gs-role` label 仍然等于当前 `GameService` 的
+   role 时，才删除该附加 Ingress。
 
-During finalization:
+删除 `GameService` 进入 finalizer 时：
 
-1. Delete the main Ingress and HTTPRoute as today.
-2. Delete the configured extra Ingress if it exists.
-3. Continue existing Service cleanup and finalizer removal.
+1. 按现有逻辑删除主 Ingress 和 HTTPRoute。
+2. 删除配置的附加 Ingress。
+3. 继续执行现有 Service 清理和 finalizer 移除。
 
-This follows the existing blue-green deletion semantics. If the old active
-`GameService` reconciles as standby before the new active `GameService`
-reconciles, the extra Ingress can be temporarily deleted. This is accepted
-because it matches the current main traffic behavior.
+该行为遵循现有蓝绿删除语义。如果旧 active 的 `GameService` 先以 standby 状态
+reconcile，而新 active 的 `GameService` 还未 reconcile，附加 Ingress 可能会短暂
+被删除。这一点与当前主流量入口行为一致，是本次设计接受的行为。
 
-Because the extra Ingress uses one configured name instead of role-specific
-names like `game-ingress-blue` and `game-ingress-green`, deletion must be guarded
-by the `gs-role` label. This prevents a standby `GameService` from deleting an
-extra Ingress that has already been recreated or updated by the current active
-`GameService`.
+因为附加 Ingress 使用配置的固定名称，而不是现有 `game-ingress-blue` 和
+`game-ingress-green` 这种按角色区分的名称，所以 standby 删除时必须检查
+`gs-role` label。这样可以避免 standby 的 `GameService` 删除已经被当前 active
+`GameService` 创建或更新过的附加 Ingress。
 
-## Labels And Ownership
+## Labels 和 OwnerReference
 
-The extra Ingress should use labels that distinguish it from the existing main
-Ingress:
+附加 Ingress 使用以下 labels，与现有主 Ingress 区分：
 
 ```yaml
 app.kubernetes.io/managed-by: gs-operator
@@ -169,42 +163,39 @@ gs-role: <deployGroup.role>
 gs-extra-ingress: "true"
 ```
 
-Set an owner reference only when the `GameService` namespace matches
-`spec.connectorNamespace`, following the existing Ingress behavior. Cross
-namespace management relies on labels because Kubernetes disallows cross
-namespace owner references.
+仅当 `GameService` 与 `spec.connectorNamespace` 位于同一 namespace 时设置
+OwnerReference，保持现有 Ingress 行为一致。跨 namespace 管理时依赖 labels，
+因为 Kubernetes 不允许跨 namespace OwnerReference。
 
-## Error Handling And Status
+## 错误处理和状态
 
-If extra Ingress reconciliation fails for an active group:
+active 组 reconcile 附加 Ingress 失败时：
 
-- emit a warning event with reason `ExtraIngressReconcileFailed`
-- set `Available=False` with reason `ExtraIngressReconcileFailed`
-- return the error so reconciliation retries
+- 记录 warning event，reason 为 `ExtraIngressReconcileFailed`
+- 设置 `Available=False`，reason 为 `ExtraIngressReconcileFailed`
+- 返回错误，让 reconcile 自动重试
 
-If extra Ingress deletion fails for a standby group:
+standby 组删除附加 Ingress 失败时：
 
-- emit a warning event with reason `ExtraIngressDeleteFailed`
-- set `Available=False` with reason `ExtraIngressDeleteFailed`
-- continue matching current standby cleanup behavior where possible
+- 记录 warning event，reason 为 `ExtraIngressDeleteFailed`
+- 设置 `Available=False`，reason 为 `ExtraIngressDeleteFailed`
+- 尽量保持当前 standby 清理逻辑的行为风格
 
-If the extra Ingress succeeds, existing `Available=True` reasons for the main
-traffic mode can remain unchanged. The condition message may mention the extra
-Ingress only if that can be done without broad status churn.
+附加 Ingress 成功时，现有主流量模式的 `Available=True` reason 可以保持不变。
+只有在不引入大范围状态字段变动的前提下，才在 message 中补充附加 Ingress 信息。
 
-## Testing
+## 测试
 
-Add focused controller tests:
+新增聚焦的 controller 测试：
 
-- active `GameService` creates the extra Ingress with host from
-  `spec.route.host`
-- active `GameService` generates backend Service names with
-  `{serviceBaseName}-{deployGroup.role}`
-- `trafficMode: Gateway` still reconciles the extra Ingress
-- standby `GameService` deletes the extra Ingress
-- missing `spec.extraIngress` preserves current behavior
+- active `GameService` 会创建附加 Ingress，并使用 `spec.route.host` 作为 host
+- active `GameService` 会按 `{serviceBaseName}-{deployGroup.role}` 生成后端 Service 名
+- `trafficMode: Gateway` 时仍会 reconcile 附加 Ingress
+- standby `GameService` 会删除 role label 匹配的附加 Ingress
+- standby `GameService` 不会删除已经由其他 active role 接管的附加 Ingress
+- 未配置 `spec.extraIngress` 时保持现有行为不变
 
-Run:
+验证命令：
 
 ```bash
 make manifests
@@ -212,14 +203,11 @@ make generate
 make test
 ```
 
-## Open Decisions
+## 已确认决策
 
-All design decisions needed for implementation are resolved:
-
-- one extra Ingress object per `GameService`
-- Ingress name is configured in `spec.extraIngress.name`
-- namespace is always `spec.connectorNamespace`
-- host is always `spec.route.host`
-- Service name format is `{serviceBaseName}-{deployGroup.role}`
-- standby deletes the extra Ingress only when the existing object's `gs-role`
-  label matches the standby role
+- 每个 `GameService` 最多配置一个附加 Ingress。
+- Ingress 名称来自 `spec.extraIngress.name`。
+- Ingress namespace 始终是 `spec.connectorNamespace`。
+- Ingress host 始终是 `spec.route.host`。
+- Service 名格式为 `{serviceBaseName}-{deployGroup.role}`。
+- standby 仅在现有对象的 `gs-role` label 与自身 role 匹配时删除附加 Ingress。
