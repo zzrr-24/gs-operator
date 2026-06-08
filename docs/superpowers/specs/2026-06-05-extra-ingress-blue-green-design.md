@@ -20,6 +20,8 @@ Service。
   - `Gateway` 模式创建或更新 HTTPRoute。
 - `Ingress` 模式下，附加 Ingress 的 `ingressClassName` 和 TLS 复用 `spec.ingress` 中的配置。
 - 附加入口 annotations 可以与主入口差异化，由 `spec.extraIngress.annotations` 单独配置。
+- 附加入口资源名根据 `spec.extraIngress.name`、`spec.trafficMode` 和
+  `spec.deployGroup.role` 生成，切换方式与现有 connector 主入口一致。
 - 后端 Service 名称直接使用配置中的 `serviceName`，operator 不生成、不拼接、不创建这些 Service。
 - 未配置 `spec.extraIngress` 时保持现有行为不变。
 
@@ -76,6 +78,17 @@ ExtraIngress *ExtraIngressConfig `json:"extraIngress,omitempty"`
 `ExtraIngressConfig` 不包含 `IngressClassName` 和 `TLS` 字段。原因是这两个配置只对
 Ingress 有意义，并且需要与主 Ingress 保持一致，所以统一复用 `spec.ingress`。
 `annotations` 可以单独配置，用于满足附加入口与主入口不同的注解需求。
+
+`name` 是附加入口资源名的基础名，不是最终 Kubernetes 对象名称。最终对象名称格式为：
+
+```text
+{spec.extraIngress.name}-{strings.ToLower(effectiveTrafficMode(gs))}-{spec.deployGroup.role}
+```
+
+示例：
+
+- `name: gamelogin`、`trafficMode: Ingress`、`role: blue` 生成 `gamelogin-ingress-blue`
+- `name: gamelogin`、`trafficMode: Gateway`、`role: green` 生成 `gamelogin-gateway-green`
 
 示例配置：
 
@@ -146,12 +159,21 @@ Service 名称是否包含 blue 或 green，只负责引用当前 active `GameSe
 当 `spec.deployGroup.active` 为 `true` 时，先按现有逻辑 reconcile 主流量入口，然后按
 `effectiveTrafficMode(gs)` 处理附加入口。
 
+附加入口资源名通过 helper 统一生成：
+
+```go
+func extraTrafficName(gs *zzrrv1alpha1.GameService, mode zzrrv1alpha1.TrafficMode) string {
+    return fmt.Sprintf("%s-%s-%s", gs.Spec.ExtraIngress.Name, strings.ToLower(string(mode)), gs.Spec.DeployGroup.Role)
+}
+```
+
 ### Ingress 模式
 
 当流量模式为 `Ingress` 时：
 
-1. 删除同名附加 HTTPRoute，作为从 Gateway 模式切回 Ingress 模式时的陈旧资源清理。
-2. 创建或更新 `Ingress/<spec.connectorNamespace>/<spec.extraIngress.name>`。
+1. 删除 `HTTPRoute/<spec.connectorNamespace>/<name>-gateway-<role>`，作为从 Gateway
+   模式切回 Ingress 模式时的陈旧资源清理。
+2. 创建或更新 `Ingress/<spec.connectorNamespace>/<name>-ingress-<role>`。
 3. 将 Ingress 的 `spec.ingressClassName` 设为 `spec.ingress.ingressClassName`。
 4. 将唯一规则的 host 设为 `spec.route.host`。
 5. 根据 `spec.extraIngress.paths` 构造 HTTP paths。
@@ -167,8 +189,9 @@ Ingress 可以直接复用 `spec.ingress` 的 class 和 TLS 配置。
 
 当流量模式为 `Gateway` 时：
 
-1. 删除同名附加 Ingress，作为从 Ingress 模式切到 Gateway 模式时的陈旧资源清理。
-2. 创建或更新 `HTTPRoute/<spec.connectorNamespace>/<spec.extraIngress.name>`。
+1. 删除 `Ingress/<spec.connectorNamespace>/<name>-ingress-<role>`，作为从 Ingress
+   模式切到 Gateway 模式时的陈旧资源清理。
+2. 创建或更新 `HTTPRoute/<spec.connectorNamespace>/<name>-gateway-<role>`。
 3. ParentRef 复用 `spec.gateway.parentRef`。
 4. Hostnames 使用 `spec.route.host`。
 5. 根据 `spec.extraIngress.paths` 构造 HTTPRoute rules。
@@ -183,23 +206,22 @@ HTTPRoute 可以直接复用 `spec.gateway.parentRef`。
 当 `spec.deployGroup.active` 为 `false` 时：
 
 1. 按现有逻辑删除主 Ingress 或 HTTPRoute。
-2. 删除同名附加 Ingress 和附加 HTTPRoute，但仅当现有对象的 `gs-role` label 仍然等于当前
-   `GameService` 的 role 时才删除。
+2. 删除当前 role 对应的附加 Ingress 和附加 HTTPRoute：
+   - `Ingress/<spec.connectorNamespace>/<name>-ingress-<role>`
+   - `HTTPRoute/<spec.connectorNamespace>/<name>-gateway-<role>`
 
 删除 `GameService` 进入 finalizer 时：
 
 1. 按现有逻辑删除主 Ingress 和 HTTPRoute。
-2. 删除 role label 与当前 `GameService` 匹配的附加 Ingress 和附加 HTTPRoute。
+2. 删除当前 role 对应的附加 Ingress 和附加 HTTPRoute。
 3. 继续执行现有 Service 清理和 finalizer 移除。
 
 该行为遵循现有蓝绿删除语义。如果旧 active 的 `GameService` 先以 standby 状态
 reconcile，而新 active 的 `GameService` 还未 reconcile，附加入口可能会短暂被删除。
 这一点与当前主流量入口行为一致，是本次设计接受的行为。
 
-因为附加入口使用配置的固定名称，而不是现有 `game-ingress-blue` 和
-`game-ingress-green` 这种按角色区分的名称，所以 standby 和 finalizer 删除时必须检查
-`gs-role` label。这样可以避免 standby 或正在删除的 `GameService` 删除已经被当前
-active `GameService` 创建或更新过的附加入口。
+因为附加入口资源名包含 trafficMode 和 role，所以蓝、绿资源天然分离。standby 和
+finalizer 删除自身 role 的附加入口，不会删除另一个 role 的 active 资源。
 
 ## Labels 和 OwnerReference
 
@@ -252,9 +274,9 @@ standby 组删除附加入口失败时：
 - 附加 HTTPRoute 复用 `spec.gateway.parentRef`。
 - 附加 HTTPRoute Hostnames 使用 `spec.route.host`。
 - 附加 HTTPRoute BackendRef name 直接等于配置的 `serviceName`。
-- active 模式切换时会清理同名的陈旧附加 Ingress 或 HTTPRoute。
-- standby `GameService` 会删除 role label 匹配的附加入口。
-- standby `GameService` 不会删除已经由其他 active role 接管的附加入口。
+- active 模式切换时会清理当前 role 下另一个 trafficMode 的陈旧附加入口。
+- standby `GameService` 会删除自身 role 对应的附加 Ingress 和附加 HTTPRoute。
+- standby `GameService` 不会删除其他 role 的附加入口。
 - 未配置 `spec.extraIngress` 时保持现有行为不变。
 
 验证命令：
@@ -268,7 +290,8 @@ make test
 ## 已确认决策
 
 - 每个 `GameService` 最多配置一个附加入口。
-- 附加入口名称来自 `spec.extraIngress.name`。
+- `spec.extraIngress.name` 是资源名基础名，不是最终对象名。
+- 附加入口最终资源名格式为 `{name}-{strings.ToLower(trafficMode)}-{role}`。
 - 附加入口 namespace 始终是 `spec.connectorNamespace`。
 - 附加入口 host 始终是 `spec.route.host`。
 - `trafficMode: Ingress` 时管理 Ingress。
@@ -277,4 +300,4 @@ make test
 - 附加入口 annotations 使用 `spec.extraIngress.annotations`，可以与主入口不同。
 - 后端 Service 名直接来自 `spec.extraIngress.paths[].serviceName`。
 - operator 不创建、不生成、不拼接附加入口后端 Service 名称。
-- standby 和 finalizer 仅在现有对象的 `gs-role` label 与自身 role 匹配时删除附加入口。
+- standby 和 finalizer 删除当前 role 对应的附加 Ingress 和附加 HTTPRoute。
