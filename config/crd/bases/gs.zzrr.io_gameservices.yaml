@@ -66,6 +66,47 @@ spec:
                 - active
                 - role
                 type: object
+              extraIngress:
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  name:
+                    minLength: 1
+                    type: string
+                  paths:
+                    items:
+                      properties:
+                        path:
+                          minLength: 1
+                          type: string
+                        pathType:
+                          enum:
+                          - Prefix
+                          - Exact
+                          - ImplementationSpecific
+                          type: string
+                        port:
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        serviceName:
+                          minLength: 1
+                          type: string
+                      required:
+                      - path
+                      - pathType
+                      - port
+                      - serviceName
+                      type: object
+                    minItems: 1
+                    type: array
+                required:
+                - name
+                - paths
+                type: object
               gateway:
                 properties:
                   parentRef:

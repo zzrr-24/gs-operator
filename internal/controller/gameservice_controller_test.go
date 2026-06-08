@@ -43,6 +43,10 @@ var _ = Describe("GameService Controller", func() {
 		deleteIfExists(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "connector-0-svc", Namespace: testNs}})
 		deleteIfExists(ctx, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: "game-ingress-blue", Namespace: testNs}})
 		deleteIfExists(ctx, &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "game-route-blue", Namespace: testNs}})
+		deleteIfExists(ctx, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: "gamelogin-ingress-blue", Namespace: testNs}})
+		deleteIfExists(ctx, &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: "gamelogin-ingress-green", Namespace: testNs}})
+		deleteIfExists(ctx, &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "gamelogin-gateway-blue", Namespace: testNs}})
+		deleteIfExists(ctx, &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "gamelogin-gateway-green", Namespace: testNs}})
 
 		var gs zzrrv1alpha1.GameService
 		err := k8sClient.Get(ctx, typeNamespacedName, &gs)
@@ -131,6 +135,78 @@ var _ = Describe("GameService Controller", func() {
 		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
 	}
 
+	addExtraIngress := func(gs *zzrrv1alpha1.GameService) {
+		gs.Spec.Ingress.Annotations = map[string]string{
+			"main-only": "true",
+		}
+		gs.Spec.Ingress.TLS = &zzrrv1alpha1.TLSConfig{
+			SecretName: "game-tls",
+		}
+		gs.Spec.ExtraIngress = &zzrrv1alpha1.ExtraIngressConfig{
+			Name: "gamelogin",
+			Annotations: map[string]string{
+				"extra-only": "true",
+			},
+			Paths: []zzrrv1alpha1.ExtraIngressPath{
+				{
+					PathType:    "Prefix",
+					Path:        "/serverlogin",
+					ServiceName: "logingame-blue",
+					Port:        9020,
+				},
+			},
+		}
+		Expect(k8sClient.Update(ctx, gs)).To(Succeed())
+	}
+
+	addGatewayExtraIngress := func(gs *zzrrv1alpha1.GameService) {
+		gs.Spec.ExtraIngress = &zzrrv1alpha1.ExtraIngressConfig{
+			Name: "gamelogin",
+			Annotations: map[string]string{
+				"extra-route": "true",
+			},
+			Paths: []zzrrv1alpha1.ExtraIngressPath{
+				{
+					PathType:    "Prefix",
+					Path:        "/serverlogin",
+					ServiceName: "logingame-blue",
+					Port:        9020,
+				},
+			},
+		}
+		Expect(k8sClient.Update(ctx, gs)).To(Succeed())
+	}
+
+	newStaleIngress := func(name string) *networkingv1.Ingress {
+		pathType := networkingv1.PathTypePrefix
+		return &networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNs},
+			Spec: networkingv1.IngressSpec{
+				Rules: []networkingv1.IngressRule{
+					{
+						Host: "stale.example.com",
+						IngressRuleValue: networkingv1.IngressRuleValue{
+							HTTP: &networkingv1.HTTPIngressRuleValue{
+								Paths: []networkingv1.HTTPIngressPath{
+									{
+										Path:     "/stale",
+										PathType: &pathType,
+										Backend: networkingv1.IngressBackend{
+											Service: &networkingv1.IngressServiceBackend{
+												Name: "stale-svc",
+												Port: networkingv1.ServiceBackendPort{Number: 80},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
 	reconcileOnce := func() {
 		_, err := reconciler().Reconcile(ctx, reconcile.Request{
 			NamespacedName: typeNamespacedName,
@@ -180,6 +256,49 @@ var _ = Describe("GameService Controller", func() {
 			Expect(ing.Spec.Rules[0].HTTP.Paths).To(HaveLen(1))
 			Expect(ing.Spec.Rules[0].HTTP.Paths[0].Path).To(Equal("/connector0"))
 		})
+
+		Context("When extra ingress is configured for Ingress traffic", func() {
+			It("should create an extra Ingress for active groups", func() {
+				gs := createGS(true)
+				addExtraIngress(gs)
+				createConnectorPod("connector-0")
+				reconcileOnce()
+				reconcileOnce()
+
+				ing := &networkingv1.Ingress{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-ingress-blue", Namespace: testNs}, ing)).To(Succeed())
+				Expect(ing.Spec.IngressClassName).NotTo(BeNil())
+				Expect(*ing.Spec.IngressClassName).To(Equal("nginx"))
+				Expect(ing.Spec.Rules).To(HaveLen(1))
+				Expect(ing.Spec.Rules[0].Host).To(Equal("test.example.com"))
+				Expect(ing.Spec.Rules[0].HTTP.Paths).To(HaveLen(1))
+				Expect(ing.Spec.Rules[0].HTTP.Paths[0].Path).To(Equal("/serverlogin"))
+				Expect(ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name).To(Equal("logingame-blue"))
+				Expect(ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number).To(Equal(int32(9020)))
+				Expect(ing.Annotations).To(HaveKeyWithValue("extra-only", "true"))
+				Expect(ing.Annotations).NotTo(HaveKey("main-only"))
+				Expect(ing.Spec.TLS).To(HaveLen(1))
+				Expect(ing.Spec.TLS[0].Hosts).To(Equal([]string{"test.example.com"}))
+				Expect(ing.Spec.TLS[0].SecretName).To(Equal("game-tls"))
+			})
+
+			It("should delete stale extra HTTPRoute when active traffic mode is Ingress", func() {
+				gs := createGS(true)
+				addExtraIngress(gs)
+				staleRoute := &gatewayv1.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "gamelogin-gateway-blue",
+						Namespace: testNs,
+					},
+				}
+				Expect(k8sClient.Create(ctx, staleRoute)).To(Succeed())
+				createConnectorPod("connector-0")
+				reconcileOnce()
+				reconcileOnce()
+
+				Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-gateway-blue", Namespace: testNs}, staleRoute))).To(BeTrue())
+			})
+		})
 	})
 
 	Context("When trafficMode is Gateway", func() {
@@ -206,6 +325,44 @@ var _ = Describe("GameService Controller", func() {
 			Expect(route.Spec.Rules[0].BackendRefs).To(HaveLen(1))
 			Expect(string(route.Spec.Rules[0].BackendRefs[0].Name)).To(Equal("connector-0-svc"))
 			Expect(*route.Spec.Rules[0].BackendRefs[0].Port).To(Equal(gatewayv1.PortNumber(80)))
+		})
+
+		It("should create an extra HTTPRoute for active groups", func() {
+			gs := createGatewayGS(true)
+			addGatewayExtraIngress(gs)
+			createConnectorPod("connector-0")
+			reconcileOnce()
+			reconcileOnce()
+
+			route := &gatewayv1.HTTPRoute{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-gateway-blue", Namespace: testNs}, route)).To(Succeed())
+			Expect(route.Annotations).To(HaveKeyWithValue("extra-route", "true"))
+			Expect(route.Spec.ParentRefs).To(HaveLen(1))
+			Expect(string(route.Spec.ParentRefs[0].Name)).To(Equal("shared-gateway"))
+			Expect(route.Spec.ParentRefs[0].Namespace).NotTo(BeNil())
+			Expect(string(*route.Spec.ParentRefs[0].Namespace)).To(Equal("gateway-system"))
+			Expect(route.Spec.ParentRefs[0].SectionName).NotTo(BeNil())
+			Expect(string(*route.Spec.ParentRefs[0].SectionName)).To(Equal("http"))
+			Expect(route.Spec.Hostnames).To(Equal([]gatewayv1.Hostname{"test.example.com"}))
+			Expect(route.Spec.Rules).To(HaveLen(1))
+			Expect(route.Spec.Rules[0].Matches).To(HaveLen(1))
+			Expect(*route.Spec.Rules[0].Matches[0].Path.Type).To(Equal(gatewayv1.PathMatchPathPrefix))
+			Expect(*route.Spec.Rules[0].Matches[0].Path.Value).To(Equal("/serverlogin"))
+			Expect(route.Spec.Rules[0].BackendRefs).To(HaveLen(1))
+			Expect(string(route.Spec.Rules[0].BackendRefs[0].Name)).To(Equal("logingame-blue"))
+			Expect(*route.Spec.Rules[0].BackendRefs[0].Port).To(Equal(gatewayv1.PortNumber(9020)))
+		})
+
+		It("should delete stale extra Ingress when active traffic mode is Gateway", func() {
+			gs := createGatewayGS(true)
+			addGatewayExtraIngress(gs)
+			staleIngress := newStaleIngress("gamelogin-ingress-blue")
+			Expect(k8sClient.Create(ctx, staleIngress)).To(Succeed())
+			createConnectorPod("connector-0")
+			reconcileOnce()
+			reconcileOnce()
+
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-ingress-blue", Namespace: testNs}, staleIngress))).To(BeTrue())
 		})
 
 		It("should delete HTTPRoute resources for standby groups", func() {
@@ -278,6 +435,26 @@ var _ = Describe("GameService Controller", func() {
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: gs.Name, Namespace: gs.Namespace}, &updated)).To(Succeed())
 			Expect(hasCondition(updated.Status.Conditions, "TrafficActive", metav1.ConditionFalse)).To(BeTrue())
+		})
+
+		It("should delete extra traffic resources for the standby role only", func() {
+			gs := createGS(false)
+			addExtraIngress(gs)
+			blueIngress := newStaleIngress("gamelogin-ingress-blue")
+			blueRoute := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Name: "gamelogin-gateway-blue", Namespace: testNs},
+			}
+			greenIngress := newStaleIngress("gamelogin-ingress-green")
+			Expect(k8sClient.Create(ctx, blueIngress)).To(Succeed())
+			Expect(k8sClient.Create(ctx, blueRoute)).To(Succeed())
+			Expect(k8sClient.Create(ctx, greenIngress)).To(Succeed())
+
+			reconcileOnce()
+			reconcileOnce()
+
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-ingress-blue", Namespace: testNs}, blueIngress))).To(BeTrue())
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-gateway-blue", Namespace: testNs}, blueRoute))).To(BeTrue())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-ingress-green", Namespace: testNs}, greenIngress)).To(Succeed())
 		})
 	})
 

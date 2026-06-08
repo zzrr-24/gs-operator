@@ -152,6 +152,20 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				_ = r.Status().Update(ctx, &gs)
 				return ctrl.Result{}, err
 			}
+			if err := ingMgr.DeleteExtraIngress(ctx, &gs); err != nil {
+				log.Error(err, "Failed to delete stale extra Ingress for gateway mode")
+				r.Recorder.Event(&gs, corev1.EventTypeWarning, "ExtraTrafficDeleteFailed", err.Error())
+				r.setCondition(&gs, "Available", metav1.ConditionFalse, "ExtraTrafficDeleteFailed", err.Error())
+				_ = r.Status().Update(ctx, &gs)
+				return ctrl.Result{}, err
+			}
+			if err := routeMgr.ReconcileExtraHTTPRoute(ctx, &gs); err != nil {
+				log.Error(err, "Failed to reconcile extra HTTPRoute")
+				r.Recorder.Event(&gs, corev1.EventTypeWarning, "ExtraHTTPRouteReconcileFailed", err.Error())
+				r.setCondition(&gs, "Available", metav1.ConditionFalse, "ExtraHTTPRouteReconcileFailed", err.Error())
+				_ = r.Status().Update(ctx, &gs)
+				return ctrl.Result{}, err
+			}
 			r.setCondition(&gs, "Available", metav1.ConditionTrue, "AllHTTPRoutePathsReady",
 				fmt.Sprintf("HTTPRoute paths synced for %d connector pods", len(ordinals)))
 		default:
@@ -169,6 +183,20 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				_ = r.Status().Update(ctx, &gs)
 				return ctrl.Result{}, err
 			}
+			if err := routeMgr.DeleteExtraHTTPRoute(ctx, &gs); err != nil {
+				log.Error(err, "Failed to delete stale extra HTTPRoute for ingress mode")
+				r.Recorder.Event(&gs, corev1.EventTypeWarning, "ExtraTrafficDeleteFailed", err.Error())
+				r.setCondition(&gs, "Available", metav1.ConditionFalse, "ExtraTrafficDeleteFailed", err.Error())
+				_ = r.Status().Update(ctx, &gs)
+				return ctrl.Result{}, err
+			}
+			if err := ingMgr.ReconcileExtraIngress(ctx, &gs); err != nil {
+				log.Error(err, "Failed to reconcile extra Ingress")
+				r.Recorder.Event(&gs, corev1.EventTypeWarning, "ExtraIngressReconcileFailed", err.Error())
+				r.setCondition(&gs, "Available", metav1.ConditionFalse, "ExtraIngressReconcileFailed", err.Error())
+				_ = r.Status().Update(ctx, &gs)
+				return ctrl.Result{}, err
+			}
 			r.setCondition(&gs, "Available", metav1.ConditionTrue, "AllIngressPathsReady",
 				fmt.Sprintf("Ingress paths synced for %d connector pods", len(ordinals)))
 		}
@@ -183,6 +211,16 @@ func (r *GameServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "Failed to delete HTTPRoute for standby group")
 			r.Recorder.Event(&gs, corev1.EventTypeWarning, "HTTPRouteDeleteFailed", err.Error())
 			r.setCondition(&gs, "Available", metav1.ConditionFalse, "HTTPRouteDeleteFailed", err.Error())
+		}
+		if err := ingMgr.DeleteExtraIngress(ctx, &gs); err != nil {
+			log.Error(err, "Failed to delete extra Ingress for standby group")
+			r.Recorder.Event(&gs, corev1.EventTypeWarning, "ExtraTrafficDeleteFailed", err.Error())
+			r.setCondition(&gs, "Available", metav1.ConditionFalse, "ExtraTrafficDeleteFailed", err.Error())
+		}
+		if err := routeMgr.DeleteExtraHTTPRoute(ctx, &gs); err != nil {
+			log.Error(err, "Failed to delete extra HTTPRoute for standby group")
+			r.Recorder.Event(&gs, corev1.EventTypeWarning, "ExtraTrafficDeleteFailed", err.Error())
+			r.setCondition(&gs, "Available", metav1.ConditionFalse, "ExtraTrafficDeleteFailed", err.Error())
 		}
 		r.setCondition(&gs, "Available", metav1.ConditionTrue, "Standby",
 			"Standby, no traffic entry active")
@@ -313,6 +351,14 @@ func (r *GameServiceReconciler) finalize(ctx context.Context, gs *zzrrv1alpha1.G
 	routeMgr := NewHTTPRouteManager(r.Client, r.Scheme)
 	if err := routeMgr.DeleteHTTPRoute(ctx, gs); err != nil {
 		log.Error(err, "Failed to delete HTTPRoute during finalization")
+		return ctrl.Result{}, err
+	}
+	if err := ingMgr.DeleteExtraIngress(ctx, gs); err != nil {
+		log.Error(err, "Failed to delete extra Ingress during finalization")
+		return ctrl.Result{}, err
+	}
+	if err := routeMgr.DeleteExtraHTTPRoute(ctx, gs); err != nil {
+		log.Error(err, "Failed to delete extra HTTPRoute during finalization")
 		return ctrl.Result{}, err
 	}
 

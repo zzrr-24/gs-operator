@@ -16,6 +16,28 @@ spec:
     annotations:
       higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
       higress.ingress.kubernetes.io/proxy-send-timeout: "300s"
+  extraIngress:
+    name: gamelogin
+    annotations:
+      higress.ingress.kubernetes.io/proxy-read-timeout: "300s"
+      higress.ingress.kubernetes.io/proxy-send-timeout: "300s"
+    paths:
+      - pathType: Prefix
+        path: /serverlogin
+        serviceName: logingame-blue
+        port: 9020
+      - pathType: Prefix
+        path: /servergovern
+        serviceName: servergovern-blue
+        port: 9015
+      - pathType: Prefix
+        path: /backend
+        serviceName: backend-blue
+        port: 9010
+      - pathType: Prefix
+        path: /statsgm
+        serviceName: statsgm-blue
+        port: 9012
   connectorNamespace: adventure
   podLabelKey: app
   podLabelValue: connector

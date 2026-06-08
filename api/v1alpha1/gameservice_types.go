@@ -31,6 +31,36 @@ type IngressConfig struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
+type ExtraIngressConfig struct {
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Paths []ExtraIngressPath `json:"paths"`
+}
+
+type ExtraIngressPath struct {
+	// +kubebuilder:validation:Enum=Prefix;Exact;ImplementationSpecific
+	PathType string `json:"pathType"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Path string `json:"path"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ServiceName string `json:"serviceName"`
+
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+}
+
 // +kubebuilder:validation:Enum=Ingress;Gateway
 type TrafficMode string
 
@@ -88,6 +118,8 @@ type GameServiceSpec struct {
 
 	Ingress *IngressConfig `json:"ingress,omitempty"`
 	Gateway *GatewayConfig `json:"gateway,omitempty"`
+
+	ExtraIngress *ExtraIngressConfig `json:"extraIngress,omitempty"`
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1

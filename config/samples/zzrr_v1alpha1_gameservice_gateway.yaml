@@ -17,6 +17,25 @@ spec:
       name: shared-gateway
       namespace: gateway-system
       sectionName: http
+  extraIngress:
+    name: gamelogin
+    paths:
+      - pathType: Prefix
+        path: /serverlogin
+        serviceName: logingame-blue
+        port: 9020
+      - pathType: Prefix
+        path: /servergovern
+        serviceName: servergovern-blue
+        port: 9015
+      - pathType: Prefix
+        path: /backend
+        serviceName: backend-blue
+        port: 9010
+      - pathType: Prefix
+        path: /statsgm
+        serviceName: statsgm-blue
+        port: 9012
   connectorNamespace: adventure
   podLabelKey: app
   podLabelValue: connector

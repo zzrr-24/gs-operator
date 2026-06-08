@@ -149,3 +149,113 @@ func (m *HTTPRouteManager) DeleteHTTPRoute(ctx context.Context, gs *zzrrv1alpha1
 	}
 	return m.Delete(ctx, &route)
 }
+
+func (m *HTTPRouteManager) ReconcileExtraHTTPRoute(ctx context.Context, gs *zzrrv1alpha1.GameService) error {
+	log := log.FromContext(ctx)
+	if gs.Spec.ExtraIngress == nil {
+		return nil
+	}
+	if gs.Spec.Gateway == nil {
+		return fmt.Errorf("gateway config is required when reconciling extra httproute")
+	}
+
+	httpRouteName := extraTrafficName(gs, zzrrv1alpha1.TrafficModeGateway)
+	rules := make([]gatewayv1.HTTPRouteRule, 0, len(gs.Spec.ExtraIngress.Paths))
+	for _, configuredPath := range gs.Spec.ExtraIngress.Paths {
+		pathType := extraHTTPPathType(configuredPath.PathType)
+		path := configuredPath.Path
+		svcName := gatewayv1.ObjectName(configuredPath.ServiceName)
+		port := configuredPath.Port
+		rules = append(rules, gatewayv1.HTTPRouteRule{
+			Matches: []gatewayv1.HTTPRouteMatch{
+				{
+					Path: &gatewayv1.HTTPPathMatch{
+						Type:  &pathType,
+						Value: &path,
+					},
+				},
+			},
+			BackendRefs: []gatewayv1.HTTPBackendRef{
+				{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: svcName,
+							Port: &port,
+						},
+					},
+				},
+			},
+		})
+	}
+
+	parentRef := gatewayv1.ParentReference{
+		Name: gatewayv1.ObjectName(gs.Spec.Gateway.ParentRef.Name),
+	}
+	if gs.Spec.Gateway.ParentRef.Namespace != "" {
+		namespace := gatewayv1.Namespace(gs.Spec.Gateway.ParentRef.Namespace)
+		parentRef.Namespace = &namespace
+	}
+	if gs.Spec.Gateway.ParentRef.SectionName != "" {
+		sectionName := gatewayv1.SectionName(gs.Spec.Gateway.ParentRef.SectionName)
+		parentRef.SectionName = &sectionName
+	}
+
+	desiredHTTPRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        httpRouteName,
+			Namespace:   gs.Spec.ConnectorNamespace,
+			Labels:      extraTrafficLabels(gs.Spec.DeployGroup.Role),
+			Annotations: maps.Clone(gs.Spec.ExtraIngress.Annotations),
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{parentRef},
+			},
+			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(gs.Spec.Route.Host)},
+			Rules:     rules,
+		},
+	}
+
+	if gs.Namespace == gs.Spec.ConnectorNamespace {
+		if err := controllerutil.SetControllerReference(gs, desiredHTTPRoute, m.Scheme); err != nil {
+			return fmt.Errorf("failed to set owner reference: %w", err)
+		}
+	}
+
+	var existingHTTPRoute gatewayv1.HTTPRoute
+	if err := m.Get(ctx, client.ObjectKey{Name: httpRouteName, Namespace: gs.Spec.ConnectorNamespace}, &existingHTTPRoute); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to get extra httproute: %w", err)
+		}
+		if err := m.Create(ctx, desiredHTTPRoute); err != nil {
+			return fmt.Errorf("failed to create extra httproute: %w", err)
+		}
+		log.Info("Created extra HTTPRoute", "httproute", httpRouteName)
+		return nil
+	}
+
+	existingHTTPRoute.Spec = desiredHTTPRoute.Spec
+	existingHTTPRoute.Annotations = maps.Clone(desiredHTTPRoute.Annotations)
+	existingHTTPRoute.Labels = maps.Clone(desiredHTTPRoute.Labels)
+	if err := m.Update(ctx, &existingHTTPRoute); err != nil {
+		return fmt.Errorf("failed to update extra httproute: %w", err)
+	}
+
+	log.Info("Updated extra HTTPRoute", "httproute", httpRouteName, "paths", len(rules))
+	return nil
+}
+
+func (m *HTTPRouteManager) DeleteExtraHTTPRoute(ctx context.Context, gs *zzrrv1alpha1.GameService) error {
+	if gs.Spec.ExtraIngress == nil {
+		return nil
+	}
+	routeName := extraTrafficName(gs, zzrrv1alpha1.TrafficModeGateway)
+	var route gatewayv1.HTTPRoute
+	if err := m.Get(ctx, client.ObjectKey{Name: routeName, Namespace: gs.Spec.ConnectorNamespace}, &route); err != nil {
+		if apimeta.IsNoMatchError(err) {
+			return nil
+		}
+		return client.IgnoreNotFound(err)
+	}
+	return m.Delete(ctx, &route)
+}

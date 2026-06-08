@@ -160,3 +160,105 @@ func (m *IngressManager) DeleteIngress(ctx context.Context, gs *zzrrv1alpha1.Gam
 	}
 	return m.Delete(ctx, &ing)
 }
+
+func (m *IngressManager) ReconcileExtraIngress(ctx context.Context, gs *zzrrv1alpha1.GameService) error {
+	log := log.FromContext(ctx)
+	if gs.Spec.ExtraIngress == nil {
+		return nil
+	}
+	if gs.Spec.Ingress == nil {
+		return fmt.Errorf("ingress config is required when reconciling extra ingress")
+	}
+
+	ingressName := extraTrafficName(gs, zzrrv1alpha1.TrafficModeIngress)
+	paths := make([]networkingv1.HTTPIngressPath, 0, len(gs.Spec.ExtraIngress.Paths))
+	for _, configuredPath := range gs.Spec.ExtraIngress.Paths {
+		pathType := networkingv1.PathTypePrefix
+		if configuredPath.PathType != "" {
+			pathType = networkingv1.PathType(configuredPath.PathType)
+		}
+		paths = append(paths, networkingv1.HTTPIngressPath{
+			Path:     configuredPath.Path,
+			PathType: &pathType,
+			Backend: networkingv1.IngressBackend{
+				Service: &networkingv1.IngressServiceBackend{
+					Name: configuredPath.ServiceName,
+					Port: networkingv1.ServiceBackendPort{
+						Number: configuredPath.Port,
+					},
+				},
+			},
+		})
+	}
+
+	desiredIngress := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        ingressName,
+			Namespace:   gs.Spec.ConnectorNamespace,
+			Labels:      extraTrafficLabels(gs.Spec.DeployGroup.Role),
+			Annotations: maps.Clone(gs.Spec.ExtraIngress.Annotations),
+		},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &gs.Spec.Ingress.IngressClassName,
+			Rules: []networkingv1.IngressRule{
+				{
+					Host: gs.Spec.Route.Host,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: paths,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if gs.Spec.Ingress.TLS != nil {
+		desiredIngress.Spec.TLS = []networkingv1.IngressTLS{
+			{
+				Hosts:      []string{gs.Spec.Route.Host},
+				SecretName: gs.Spec.Ingress.TLS.SecretName,
+			},
+		}
+	}
+
+	if gs.Namespace == gs.Spec.ConnectorNamespace {
+		if err := controllerutil.SetControllerReference(gs, desiredIngress, m.Scheme); err != nil {
+			return fmt.Errorf("failed to set owner reference: %w", err)
+		}
+	}
+
+	var existingIngress networkingv1.Ingress
+	if err := m.Get(ctx, client.ObjectKey{Name: ingressName, Namespace: gs.Spec.ConnectorNamespace}, &existingIngress); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to get extra ingress: %w", err)
+		}
+		if err := m.Create(ctx, desiredIngress); err != nil {
+			return fmt.Errorf("failed to create extra ingress: %w", err)
+		}
+		log.Info("Created extra Ingress", "ingress", ingressName)
+		return nil
+	}
+
+	existingIngress.Spec = desiredIngress.Spec
+	existingIngress.Annotations = maps.Clone(desiredIngress.Annotations)
+	existingIngress.Labels = maps.Clone(desiredIngress.Labels)
+	if err := m.Update(ctx, &existingIngress); err != nil {
+		return fmt.Errorf("failed to update extra ingress: %w", err)
+	}
+
+	log.Info("Updated extra Ingress", "ingress", ingressName, "paths", len(paths))
+	return nil
+}
+
+func (m *IngressManager) DeleteExtraIngress(ctx context.Context, gs *zzrrv1alpha1.GameService) error {
+	if gs.Spec.ExtraIngress == nil {
+		return nil
+	}
+	ingressName := extraTrafficName(gs, zzrrv1alpha1.TrafficModeIngress)
+	var ing networkingv1.Ingress
+	if err := m.Get(ctx, client.ObjectKey{Name: ingressName, Namespace: gs.Spec.ConnectorNamespace}, &ing); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	return m.Delete(ctx, &ing)
+}
