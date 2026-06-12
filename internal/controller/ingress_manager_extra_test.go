@@ -47,7 +47,7 @@ func TestReconcileExtraIngress(t *testing.T) {
 	if got := ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number; got != 9020 {
 		t.Fatalf("service port = %d", got)
 	}
-	if got := ing.Annotations["extra-only"]; got != "true" {
+	if got := ing.Annotations["extra-only"]; got != testTrueValue {
 		t.Fatalf("extra annotation = %q", got)
 	}
 	if _, exists := ing.Annotations["main-only"]; exists {
@@ -73,11 +73,11 @@ func TestReconcileExtraIngressMergesMetadataOnUpdate(t *testing.T) {
 			Namespace: "adventure",
 			Annotations: map[string]string{
 				"extra-only":            "stale",
-				"platform.example/keep": "true",
+				"platform.example/keep": testTrueValue,
 			},
 			Labels: map[string]string{
 				"gs-role":               "stale",
-				"platform.example/keep": "true",
+				"platform.example/keep": testTrueValue,
 			},
 		},
 	}
@@ -92,22 +92,22 @@ func TestReconcileExtraIngressMergesMetadataOnUpdate(t *testing.T) {
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-ingress-blue", Namespace: "adventure"}, ing); err != nil {
 		t.Fatalf("failed to get extra ingress: %v", err)
 	}
-	if got := ing.Annotations["platform.example/keep"]; got != "true" {
+	if got := ing.Annotations["platform.example/keep"]; got != testTrueValue {
 		t.Fatalf("platform annotation = %q", got)
 	}
-	if got := ing.Annotations["extra-only"]; got != "true" {
+	if got := ing.Annotations["extra-only"]; got != testTrueValue {
 		t.Fatalf("extra annotation = %q", got)
 	}
-	if got := ing.Labels["platform.example/keep"]; got != "true" {
+	if got := ing.Labels["platform.example/keep"]; got != testTrueValue {
 		t.Fatalf("platform label = %q", got)
 	}
 	if got := ing.Labels["gs-role"]; got != "blue" {
 		t.Fatalf("role label = %q", got)
 	}
-	if got := ing.Labels["gs-extra-traffic"]; got != "true" {
+	if got := ing.Labels["gs-extra-traffic"]; got != testTrueValue {
 		t.Fatalf("extra traffic label = %q", got)
 	}
-	if got := ing.Labels["app.kubernetes.io/managed-by"]; got != "gs-operator" {
+	if got := ing.Labels["app.kubernetes.io/managed-by"]; got != testManagedByValue {
 		t.Fatalf("managed-by label = %q", got)
 	}
 }
@@ -152,13 +152,13 @@ func extraIngressTestGameService() *zzrrv1alpha1.GameService {
 				TLS: &zzrrv1alpha1.TLSConfig{
 					SecretName: "game-tls",
 				},
-				Annotations: map[string]string{"main-only": "true"},
+				Annotations: map[string]string{"main-only": testTrueValue},
 			},
 			ConnectorNamespace: "adventure",
 			DeployGroup:        zzrrv1alpha1.DeployGroupConfig{Role: "blue", Active: true},
 			ExtraIngress: &zzrrv1alpha1.ExtraIngressConfig{
 				Name:        "gamelogin",
-				Annotations: map[string]string{"extra-only": "true"},
+				Annotations: map[string]string{"extra-only": testTrueValue},
 				Paths: []zzrrv1alpha1.ExtraIngressPath{
 					{PathType: "Prefix", Path: "/serverlogin", ServiceName: "logingame-blue", Port: 9020},
 				},

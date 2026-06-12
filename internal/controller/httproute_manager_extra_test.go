@@ -14,8 +14,6 @@ import (
 	zzrrv1alpha1 "gs-operator/api/v1alpha1"
 )
 
-const extraRouteAnnotationValue = "true"
-
 func TestReconcileExtraHTTPRoute(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -37,7 +35,7 @@ func TestReconcileExtraHTTPRoute(t *testing.T) {
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-gateway-blue", Namespace: "adventure"}, route); err != nil {
 		t.Fatalf("failed to get extra httproute: %v", err)
 	}
-	if got := route.Annotations["extra-route"]; got != extraRouteAnnotationValue {
+	if got := route.Annotations["extra-route"]; got != testTrueValue {
 		t.Fatalf("extra annotation = %q", got)
 	}
 	if got := string(route.Spec.ParentRefs[0].Name); got != "shared-gateway" {
@@ -81,11 +79,11 @@ func TestReconcileExtraHTTPRouteMergesMetadataOnUpdate(t *testing.T) {
 			Namespace: "adventure",
 			Annotations: map[string]string{
 				"extra-route":           "stale",
-				"platform.example/keep": "true",
+				"platform.example/keep": testTrueValue,
 			},
 			Labels: map[string]string{
 				"gs-extra-traffic":      "false",
-				"platform.example/keep": "true",
+				"platform.example/keep": testTrueValue,
 			},
 		},
 	}
@@ -100,22 +98,22 @@ func TestReconcileExtraHTTPRouteMergesMetadataOnUpdate(t *testing.T) {
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-gateway-blue", Namespace: "adventure"}, route); err != nil {
 		t.Fatalf("failed to get extra httproute: %v", err)
 	}
-	if got := route.Annotations["platform.example/keep"]; got != "true" {
+	if got := route.Annotations["platform.example/keep"]; got != testTrueValue {
 		t.Fatalf("platform annotation = %q", got)
 	}
-	if got := route.Annotations["extra-route"]; got != extraRouteAnnotationValue {
+	if got := route.Annotations["extra-route"]; got != testTrueValue {
 		t.Fatalf("extra annotation = %q", got)
 	}
-	if got := route.Labels["platform.example/keep"]; got != "true" {
+	if got := route.Labels["platform.example/keep"]; got != testTrueValue {
 		t.Fatalf("platform label = %q", got)
 	}
 	if got := route.Labels["gs-role"]; got != "blue" {
 		t.Fatalf("role label = %q", got)
 	}
-	if got := route.Labels["gs-extra-traffic"]; got != "true" {
+	if got := route.Labels["gs-extra-traffic"]; got != testTrueValue {
 		t.Fatalf("extra traffic label = %q", got)
 	}
-	if got := route.Labels["app.kubernetes.io/managed-by"]; got != "gs-operator" {
+	if got := route.Labels["app.kubernetes.io/managed-by"]; got != testManagedByValue {
 		t.Fatalf("managed-by label = %q", got)
 	}
 }
@@ -166,7 +164,7 @@ func extraHTTPRouteTestGameService() *zzrrv1alpha1.GameService {
 			DeployGroup:        zzrrv1alpha1.DeployGroupConfig{Role: "blue", Active: true},
 			ExtraIngress: &zzrrv1alpha1.ExtraIngressConfig{
 				Name:        "gamelogin",
-				Annotations: map[string]string{"extra-route": extraRouteAnnotationValue},
+				Annotations: map[string]string{"extra-route": testTrueValue},
 				Paths: []zzrrv1alpha1.ExtraIngressPath{
 					{PathType: "Prefix", Path: "/serverlogin", ServiceName: "logingame-blue", Port: 9020},
 				},

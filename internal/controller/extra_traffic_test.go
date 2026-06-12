@@ -8,6 +8,11 @@ import (
 	zzrrv1alpha1 "gs-operator/api/v1alpha1"
 )
 
+const (
+	testManagedByValue = "gs-operator"
+	testTrueValue      = "true"
+)
+
 func TestExtraTrafficName(t *testing.T) {
 	gs := &zzrrv1alpha1.GameService{
 		Spec: zzrrv1alpha1.GameServiceSpec{
@@ -26,13 +31,13 @@ func TestExtraTrafficName(t *testing.T) {
 func TestExtraTrafficLabels(t *testing.T) {
 	labels := extraTrafficLabels("green")
 
-	if labels["app.kubernetes.io/managed-by"] != "gs-operator" {
+	if labels["app.kubernetes.io/managed-by"] != testManagedByValue {
 		t.Fatalf("managed-by label = %q", labels["app.kubernetes.io/managed-by"])
 	}
 	if labels["gs-role"] != "green" {
 		t.Fatalf("gs-role label = %q", labels["gs-role"])
 	}
-	if labels["gs-extra-traffic"] != "true" {
+	if labels["gs-extra-traffic"] != testTrueValue {
 		t.Fatalf("gs-extra-traffic label = %q", labels["gs-extra-traffic"])
 	}
 }

@@ -137,7 +137,7 @@ var _ = Describe("GameService Controller", func() {
 
 	addExtraIngress := func(gs *zzrrv1alpha1.GameService) {
 		gs.Spec.Ingress.Annotations = map[string]string{
-			"main-only": "true",
+			"main-only": testTrueValue,
 		}
 		gs.Spec.Ingress.TLS = &zzrrv1alpha1.TLSConfig{
 			SecretName: "game-tls",
@@ -145,7 +145,7 @@ var _ = Describe("GameService Controller", func() {
 		gs.Spec.ExtraIngress = &zzrrv1alpha1.ExtraIngressConfig{
 			Name: "gamelogin",
 			Annotations: map[string]string{
-				"extra-only": "true",
+				"extra-only": testTrueValue,
 			},
 			Paths: []zzrrv1alpha1.ExtraIngressPath{
 				{
@@ -163,7 +163,7 @@ var _ = Describe("GameService Controller", func() {
 		gs.Spec.ExtraIngress = &zzrrv1alpha1.ExtraIngressConfig{
 			Name: "gamelogin",
 			Annotations: map[string]string{
-				"extra-route": "true",
+				"extra-route": testTrueValue,
 			},
 			Paths: []zzrrv1alpha1.ExtraIngressPath{
 				{
@@ -275,7 +275,7 @@ var _ = Describe("GameService Controller", func() {
 				Expect(ing.Spec.Rules[0].HTTP.Paths[0].Path).To(Equal("/serverlogin"))
 				Expect(ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name).To(Equal("logingame-blue"))
 				Expect(ing.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Number).To(Equal(int32(9020)))
-				Expect(ing.Annotations).To(HaveKeyWithValue("extra-only", "true"))
+				Expect(ing.Annotations).To(HaveKeyWithValue("extra-only", testTrueValue))
 				Expect(ing.Annotations).NotTo(HaveKey("main-only"))
 				Expect(ing.Spec.TLS).To(HaveLen(1))
 				Expect(ing.Spec.TLS[0].Hosts).To(Equal([]string{"test.example.com"}))
@@ -336,7 +336,7 @@ var _ = Describe("GameService Controller", func() {
 
 			route := &gatewayv1.HTTPRoute{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-gateway-blue", Namespace: testNs}, route)).To(Succeed())
-			Expect(route.Annotations).To(HaveKeyWithValue("extra-route", "true"))
+			Expect(route.Annotations).To(HaveKeyWithValue("extra-route", testTrueValue))
 			Expect(route.Spec.ParentRefs).To(HaveLen(1))
 			Expect(string(route.Spec.ParentRefs[0].Name)).To(Equal("shared-gateway"))
 			Expect(route.Spec.ParentRefs[0].Namespace).NotTo(BeNil())
