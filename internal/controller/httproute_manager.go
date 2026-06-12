@@ -235,8 +235,17 @@ func (m *HTTPRouteManager) ReconcileExtraHTTPRoute(ctx context.Context, gs *zzrr
 	}
 
 	existingHTTPRoute.Spec = desiredHTTPRoute.Spec
-	existingHTTPRoute.Annotations = maps.Clone(desiredHTTPRoute.Annotations)
-	existingHTTPRoute.Labels = maps.Clone(desiredHTTPRoute.Labels)
+
+	if existingHTTPRoute.Annotations == nil {
+		existingHTTPRoute.Annotations = make(map[string]string)
+	}
+	maps.Copy(existingHTTPRoute.Annotations, desiredHTTPRoute.Annotations)
+
+	if existingHTTPRoute.Labels == nil {
+		existingHTTPRoute.Labels = make(map[string]string)
+	}
+	maps.Copy(existingHTTPRoute.Labels, desiredHTTPRoute.Labels)
+
 	if err := m.Update(ctx, &existingHTTPRoute); err != nil {
 		return fmt.Errorf("failed to update extra httproute: %w", err)
 	}

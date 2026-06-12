@@ -58,6 +58,60 @@ func TestReconcileExtraIngress(t *testing.T) {
 	}
 }
 
+func TestReconcileExtraIngressMergesMetadataOnUpdate(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := networkingv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := zzrrv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	existing := &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gamelogin-ingress-blue",
+			Namespace: "adventure",
+			Annotations: map[string]string{
+				"extra-only":            "stale",
+				"platform.example/keep": "true",
+			},
+			Labels: map[string]string{
+				"gs-role":               "stale",
+				"platform.example/keep": "true",
+			},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	mgr := NewIngressManager(k8sClient, scheme)
+
+	if err := mgr.ReconcileExtraIngress(ctx, extraIngressTestGameService()); err != nil {
+		t.Fatalf("ReconcileExtraIngress() error = %v", err)
+	}
+
+	ing := &networkingv1.Ingress{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-ingress-blue", Namespace: "adventure"}, ing); err != nil {
+		t.Fatalf("failed to get extra ingress: %v", err)
+	}
+	if got := ing.Annotations["platform.example/keep"]; got != "true" {
+		t.Fatalf("platform annotation = %q", got)
+	}
+	if got := ing.Annotations["extra-only"]; got != "true" {
+		t.Fatalf("extra annotation = %q", got)
+	}
+	if got := ing.Labels["platform.example/keep"]; got != "true" {
+		t.Fatalf("platform label = %q", got)
+	}
+	if got := ing.Labels["gs-role"]; got != "blue" {
+		t.Fatalf("role label = %q", got)
+	}
+	if got := ing.Labels["gs-extra-traffic"]; got != "true" {
+		t.Fatalf("extra traffic label = %q", got)
+	}
+	if got := ing.Labels["app.kubernetes.io/managed-by"]; got != "gs-operator" {
+		t.Fatalf("managed-by label = %q", got)
+	}
+}
+
 func TestDeleteExtraIngress(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()

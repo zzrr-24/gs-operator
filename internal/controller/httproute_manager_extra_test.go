@@ -66,6 +66,60 @@ func TestReconcileExtraHTTPRoute(t *testing.T) {
 	}
 }
 
+func TestReconcileExtraHTTPRouteMergesMetadataOnUpdate(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := gatewayv1.Install(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := zzrrv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	existing := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gamelogin-gateway-blue",
+			Namespace: "adventure",
+			Annotations: map[string]string{
+				"extra-route":           "stale",
+				"platform.example/keep": "true",
+			},
+			Labels: map[string]string{
+				"gs-extra-traffic":      "false",
+				"platform.example/keep": "true",
+			},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	mgr := NewHTTPRouteManager(k8sClient, scheme)
+
+	if err := mgr.ReconcileExtraHTTPRoute(ctx, extraHTTPRouteTestGameService()); err != nil {
+		t.Fatalf("ReconcileExtraHTTPRoute() error = %v", err)
+	}
+
+	route := &gatewayv1.HTTPRoute{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gamelogin-gateway-blue", Namespace: "adventure"}, route); err != nil {
+		t.Fatalf("failed to get extra httproute: %v", err)
+	}
+	if got := route.Annotations["platform.example/keep"]; got != "true" {
+		t.Fatalf("platform annotation = %q", got)
+	}
+	if got := route.Annotations["extra-route"]; got != extraRouteAnnotationValue {
+		t.Fatalf("extra annotation = %q", got)
+	}
+	if got := route.Labels["platform.example/keep"]; got != "true" {
+		t.Fatalf("platform label = %q", got)
+	}
+	if got := route.Labels["gs-role"]; got != "blue" {
+		t.Fatalf("role label = %q", got)
+	}
+	if got := route.Labels["gs-extra-traffic"]; got != "true" {
+		t.Fatalf("extra traffic label = %q", got)
+	}
+	if got := route.Labels["app.kubernetes.io/managed-by"]; got != "gs-operator" {
+		t.Fatalf("managed-by label = %q", got)
+	}
+}
+
 func TestDeleteExtraHTTPRoute(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()

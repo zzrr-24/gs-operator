@@ -241,8 +241,17 @@ func (m *IngressManager) ReconcileExtraIngress(ctx context.Context, gs *zzrrv1al
 	}
 
 	existingIngress.Spec = desiredIngress.Spec
-	existingIngress.Annotations = maps.Clone(desiredIngress.Annotations)
-	existingIngress.Labels = maps.Clone(desiredIngress.Labels)
+
+	if existingIngress.Annotations == nil {
+		existingIngress.Annotations = make(map[string]string)
+	}
+	maps.Copy(existingIngress.Annotations, desiredIngress.Annotations)
+
+	if existingIngress.Labels == nil {
+		existingIngress.Labels = make(map[string]string)
+	}
+	maps.Copy(existingIngress.Labels, desiredIngress.Labels)
+
 	if err := m.Update(ctx, &existingIngress); err != nil {
 		return fmt.Errorf("failed to update extra ingress: %w", err)
 	}
