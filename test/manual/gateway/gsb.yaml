@@ -1,0 +1,296 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gw-blue
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: connector
+  namespace: gw-blue
+spec:
+  replicas: 3
+  serviceName: connector-headless
+  selector:
+    matchLabels:
+      app: connector
+      adventure: connector
+  template:
+    metadata:
+      labels:
+        app: connector
+        adventure: connector
+    spec:
+      containers:
+      - name: connector
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        command:
+        - /bin/sh
+        - -c
+        - |
+          ORDINAL=$(echo "$POD_NAME" | awk -F'-' '{print $NF}')
+          cat > /etc/nginx/conf.d/default.conf << EOF
+          server {
+              listen 80;
+              server_name _;
+
+              location / {
+                  return 200 "connector-blue-$ORDINAL\n";
+                  add_header Content-Type text/plain;
+              }
+          }
+          EOF
+          nginx -g 'daemon off;'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: connector-headless
+  namespace: gw-blue
+spec:
+  clusterIP: None
+  selector:
+    app: connector
+    adventure: connector
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: logingame-blue
+  namespace: gw-blue
+  labels:
+    app: logingame-blue
+spec:
+  containers:
+  - name: http
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+      name: http
+    env:
+    - name: RESPONSE
+      value: logingame-blue
+    command:
+    - /bin/sh
+    - -c
+    - |
+      cat > /etc/nginx/conf.d/default.conf << EOF
+      server {
+          listen 80;
+          server_name _;
+
+          location / {
+              return 200 "$RESPONSE\n";
+              add_header Content-Type text/plain;
+          }
+      }
+      EOF
+      nginx -g 'daemon off;'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logingame-blue
+  namespace: gw-blue
+spec:
+  selector:
+    app: logingame-blue
+  ports:
+  - name: http
+    port: 9020
+    targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: servergovern-blue
+  namespace: gw-blue
+  labels:
+    app: servergovern-blue
+spec:
+  containers:
+  - name: http
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+      name: http
+    env:
+    - name: RESPONSE
+      value: servergovern-blue
+    command:
+    - /bin/sh
+    - -c
+    - |
+      cat > /etc/nginx/conf.d/default.conf << EOF
+      server {
+          listen 80;
+          server_name _;
+
+          location / {
+              return 200 "$RESPONSE\n";
+              add_header Content-Type text/plain;
+          }
+      }
+      EOF
+      nginx -g 'daemon off;'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: servergovern-blue
+  namespace: gw-blue
+spec:
+  selector:
+    app: servergovern-blue
+  ports:
+  - name: http
+    port: 9015
+    targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: backend-blue
+  namespace: gw-blue
+  labels:
+    app: backend-blue
+spec:
+  containers:
+  - name: http
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+      name: http
+    env:
+    - name: RESPONSE
+      value: backend-blue
+    command:
+    - /bin/sh
+    - -c
+    - |
+      cat > /etc/nginx/conf.d/default.conf << EOF
+      server {
+          listen 80;
+          server_name _;
+
+          location / {
+              return 200 "$RESPONSE\n";
+              add_header Content-Type text/plain;
+          }
+      }
+      EOF
+      nginx -g 'daemon off;'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-blue
+  namespace: gw-blue
+spec:
+  selector:
+    app: backend-blue
+  ports:
+  - name: http
+    port: 9010
+    targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: statsgm-blue
+  namespace: gw-blue
+  labels:
+    app: statsgm-blue
+spec:
+  containers:
+  - name: http
+    image: nginx:alpine
+    ports:
+    - containerPort: 80
+      name: http
+    env:
+    - name: RESPONSE
+      value: statsgm-blue
+    command:
+    - /bin/sh
+    - -c
+    - |
+      cat > /etc/nginx/conf.d/default.conf << EOF
+      server {
+          listen 80;
+          server_name _;
+
+          location / {
+              return 200 "$RESPONSE\n";
+              add_header Content-Type text/plain;
+          }
+      }
+      EOF
+      nginx -g 'daemon off;'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: statsgm-blue
+  namespace: gw-blue
+spec:
+  selector:
+    app: statsgm-blue
+  ports:
+  - name: http
+    port: 9012
+    targetPort: 80
+---
+apiVersion: gs.zzrr.io/v1alpha1
+kind: GameService
+metadata:
+  name: gateway-blue
+  namespace: gw-blue
+spec:
+  trafficMode: Gateway
+  route:
+    host: game.example.com
+    pathType: Prefix
+    pathPrefix: "/connector"
+    port: 80
+  gateway:
+    parentRef:
+      name: shared-gateway
+      namespace: gateway-system
+      sectionName: http
+  extraIngress:
+    name: gamelogin
+    paths:
+    - pathType: Prefix
+      path: /serverlogin
+      serviceName: logingame-blue
+      port: 9020
+    - pathType: Prefix
+      path: /servergovern
+      serviceName: servergovern-blue
+      port: 9015
+    - pathType: Prefix
+      path: /backend
+      serviceName: backend-blue
+      port: 9010
+    - pathType: Prefix
+      path: /statsgm
+      serviceName: statsgm-blue
+      port: 9012
+  connectorNamespace: gw-blue
+  podLabelKey: adventure
+  podLabelValue: connector
+  deployGroup:
+    role: blue
+    active: true
